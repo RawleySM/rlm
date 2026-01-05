@@ -7,16 +7,13 @@ workspace environment with session state management.
 import os
 from typing import TYPE_CHECKING, Any
 
-from rlm_adk._compat import ToolContextProtocol
-
-if TYPE_CHECKING:
-    from rlm_adk._compat import ToolContext
+from google.adk.tools import ToolContext
 
 # Session state storage for REPL variables
 _REPL_SESSION_STATE: dict[str, Any] = {}
 
 
-def execute_python_code(code: str, tool_context: ToolContextProtocol) -> dict:
+def execute_python_code(code: str, tool_context: ToolContext) -> dict:
     """Execute Python code in a Databricks workspace REPL environment.
 
     Use this tool to run Python code for data analysis, transformations,
@@ -54,7 +51,7 @@ def execute_python_code(code: str, tool_context: ToolContextProtocol) -> dict:
         }
 
 
-def execute_sql_query(query: str, tool_context: ToolContextProtocol) -> dict:
+def execute_sql_query(query: str, tool_context: ToolContext) -> dict:
     """Execute a SQL query against Databricks SQL warehouse or Unity Catalog.
 
     Use this tool to run SQL queries for data exploration, creating views,
@@ -92,7 +89,7 @@ def execute_sql_query(query: str, tool_context: ToolContextProtocol) -> dict:
         }
 
 
-def get_repl_session_state(tool_context: ToolContextProtocol) -> dict:
+def get_repl_session_state(tool_context: ToolContext) -> dict:
     """Get the current state of variables in the REPL session.
 
     Use this tool to inspect what variables are currently available
@@ -147,7 +144,7 @@ def _get_value_preview(value: Any, max_length: int = 200) -> str:
         return f"<{type(value).__name__} object>"
 
 
-def _simulate_python_execution(code: str, tool_context: ToolContextProtocol) -> dict:
+def _simulate_python_execution(code: str, tool_context: ToolContext) -> dict:
     """Simulate Python execution for development/testing."""
     import io
     import sys
@@ -190,7 +187,7 @@ def _simulate_python_execution(code: str, tool_context: ToolContextProtocol) -> 
         sys.stdout = old_stdout
 
 
-def _simulate_sql_execution(query: str, tool_context: ToolContextProtocol) -> dict:
+def _simulate_sql_execution(query: str, tool_context: ToolContext) -> dict:
     """Simulate SQL execution for development/testing."""
     # Parse the query to provide meaningful mock responses
     query_lower = query.lower().strip()

@@ -15,7 +15,7 @@ by spawning sub-LM calls from within code execution.
 import os
 from typing import Any
 
-from rlm_adk._compat import ToolContextProtocol
+from google.adk.tools import ToolContext
 from rlm_adk.rlm_repl import (
     RLMREPLEnvironment,
     clear_repl_session,
@@ -25,7 +25,7 @@ from rlm_adk.rlm_repl import (
 )
 
 
-def _create_llm_query_fn(tool_context: ToolContextProtocol):
+def _create_llm_query_fn(tool_context: ToolContext):
     """Create an llm_query function that uses the ADK model.
 
     In a full integration, this would call back to the ADK agent's
@@ -43,7 +43,7 @@ def _create_llm_query_fn(tool_context: ToolContextProtocol):
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-2.0-flash")
+                model = genai.GenerativeModel("gemini-3-pro")
                 response = model.generate_content(prompt)
                 return response.text
             except Exception as e:
@@ -55,7 +55,7 @@ def _create_llm_query_fn(tool_context: ToolContextProtocol):
     return llm_query
 
 
-def _create_llm_query_batched_fn(tool_context: ToolContextProtocol):
+def _create_llm_query_batched_fn(tool_context: ToolContext):
     """Create a batched llm_query function."""
     llm_query = _create_llm_query_fn(tool_context)
 
@@ -98,7 +98,7 @@ def _simulate_llm_response(prompt: str) -> str:
 
 def rlm_execute_code(
     code: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Execute Python code in the RLM REPL environment.
 
@@ -167,7 +167,7 @@ def rlm_execute_code(
 def rlm_load_context(
     context_data: Any,
     context_description: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Load data into the RLM REPL context variable.
 
@@ -245,7 +245,7 @@ def rlm_load_context(
 def rlm_query_context(
     query: str,
     strategy: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Use RLM recursive decomposition to analyze the loaded context.
 
@@ -434,7 +434,7 @@ print(f"\\nFinal Answer: {{final_answer}}")
     }
 
 
-def rlm_get_session_state(tool_context: ToolContextProtocol) -> dict:
+def rlm_get_session_state(tool_context: ToolContext) -> dict:
     """Get the current state of the RLM REPL session.
 
     Use this to inspect what variables are defined, how many sub-LM
@@ -473,7 +473,7 @@ def rlm_get_session_state(tool_context: ToolContextProtocol) -> dict:
     }
 
 
-def rlm_clear_session(tool_context: ToolContextProtocol) -> dict:
+def rlm_clear_session(tool_context: ToolContext) -> dict:
     """Clear the RLM REPL session.
 
     Resets all variables, clears context, and resets counters.

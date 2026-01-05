@@ -18,8 +18,6 @@ import re
 import sys
 from typing import Any, Callable
 
-from rlm_adk._compat import ToolContextProtocol
-
 
 class RLMREPLEnvironment:
     """RLM-style REPL environment with llm_query support.
@@ -237,7 +235,12 @@ def find_final_answer(response: str) -> str | None:
     # Check for FINAL(...)
     final_match = re.search(r"FINAL\((.*?)\)", response, re.DOTALL)
     if final_match:
-        return final_match.group(1).strip()
+        content = final_match.group(1).strip()
+        # Strip quotes if present
+        if (content.startswith('"') and content.endswith('"')) or \
+           (content.startswith("'") and content.endswith("'")):
+            content = content[1:-1]
+        return content.strip()
 
     # Check for FINAL_VAR(variable_name) - this needs to be resolved later
     final_var_match = re.search(r"FINAL_VAR\((\w+)\)", response)

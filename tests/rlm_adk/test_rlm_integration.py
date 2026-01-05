@@ -10,7 +10,7 @@ These tests do NOT require google-adk to be installed.
 
 import pytest
 
-from rlm_adk._compat import SimpleToolContext
+from rlm_adk.testing import create_tool_context
 from rlm_adk.rlm_repl import (
     RLMREPLEnvironment,
     find_code_blocks,
@@ -280,7 +280,7 @@ class TestRLMTools:
         """Test rlm_execute_code tool."""
         from rlm_adk.tools.rlm_tools import rlm_execute_code
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_exec"})
+        ctx = create_tool_context({"rlm_session_id": "test_exec"})
         result = rlm_execute_code("x = 2 + 2", ctx)
 
         assert result["status"] == "success"
@@ -289,7 +289,7 @@ class TestRLMTools:
         """Test rlm_execute_code can access loaded context."""
         from rlm_adk.tools.rlm_tools import rlm_execute_code, rlm_load_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_exec_ctx"})
+        ctx = create_tool_context({"rlm_session_id": "test_exec_ctx"})
 
         # Load context first
         rlm_load_context(
@@ -307,7 +307,7 @@ class TestRLMTools:
         """Test rlm_load_context tool."""
         from rlm_adk.tools.rlm_tools import rlm_load_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_load"})
+        ctx = create_tool_context({"rlm_session_id": "test_load"})
         result = rlm_load_context(
             context_data=[1, 2, 3, 4, 5],
             context_description="Test numbers",
@@ -323,7 +323,7 @@ class TestRLMTools:
         """Test rlm_query_context without loaded context."""
         from rlm_adk.tools.rlm_tools import rlm_query_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_query_empty"})
+        ctx = create_tool_context({"rlm_session_id": "test_query_empty"})
         result = rlm_query_context(
             query="Find duplicates",
             strategy="chunk_and_aggregate",
@@ -337,7 +337,7 @@ class TestRLMTools:
         """Test chunk_and_aggregate strategy."""
         from rlm_adk.tools.rlm_tools import rlm_load_context, rlm_query_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_chunk_agg"})
+        ctx = create_tool_context({"rlm_session_id": "test_chunk_agg"})
 
         # Load test data
         rlm_load_context(
@@ -360,7 +360,7 @@ class TestRLMTools:
         """Test rlm_get_session_state tool."""
         from rlm_adk.tools.rlm_tools import rlm_get_session_state, rlm_execute_code
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_state"})
+        ctx = create_tool_context({"rlm_session_id": "test_state"})
 
         # Execute some code first
         rlm_execute_code("my_var = 42", ctx)
@@ -380,7 +380,7 @@ class TestRLMTools:
             rlm_get_session_state,
         )
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_clear"})
+        ctx = create_tool_context({"rlm_session_id": "test_clear"})
 
         rlm_execute_code("x = 1", ctx)
         rlm_clear_session(ctx)
@@ -396,7 +396,7 @@ class TestContextLoaders:
         """Test loading vendor data from hospital chains."""
         from rlm_adk.tools.context_loader import load_vendor_data_to_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_vendor_load"})
+        ctx = create_tool_context({"rlm_session_id": "test_vendor_load"})
         result = load_vendor_data_to_context(
             hospital_chains=["hospital_chain_alpha", "hospital_chain_beta"],
             include_masterdata=True,
@@ -413,7 +413,7 @@ class TestContextLoaders:
         """Test loading vendor data without masterdata."""
         from rlm_adk.tools.context_loader import load_vendor_data_to_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_vendor_no_md"})
+        ctx = create_tool_context({"rlm_session_id": "test_vendor_no_md"})
         result = load_vendor_data_to_context(
             hospital_chains=["hospital_chain_gamma"],
             include_masterdata=False,
@@ -428,7 +428,7 @@ class TestContextLoaders:
         """Test loading custom context data."""
         from rlm_adk.tools.context_loader import load_custom_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_custom"})
+        ctx = create_tool_context({"rlm_session_id": "test_custom"})
         result = load_custom_context(
             data={"custom_field": "custom_value", "numbers": [1, 2, 3]},
             description="Custom test data",
@@ -442,7 +442,7 @@ class TestContextLoaders:
         """Test loading SQL query results into context."""
         from rlm_adk.tools.context_loader import load_query_results_to_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_query_load"})
+        ctx = create_tool_context({"rlm_session_id": "test_query_load"})
         result = load_query_results_to_context(
             sql_query="SELECT * FROM vendors LIMIT 10",
             description="Vendor query results",
@@ -460,7 +460,7 @@ class TestRLMDecompositionStrategies:
         """Test iterative decomposition strategy."""
         from rlm_adk.tools.rlm_tools import rlm_load_context, rlm_query_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_iterative"})
+        ctx = create_tool_context({"rlm_session_id": "test_iterative"})
 
         rlm_load_context(
             context_data=[{"id": 1}, {"id": 2}, {"id": 3}],
@@ -481,7 +481,7 @@ class TestRLMDecompositionStrategies:
         """Test map-reduce decomposition strategy."""
         from rlm_adk.tools.rlm_tools import rlm_load_context, rlm_query_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_map_reduce"})
+        ctx = create_tool_context({"rlm_session_id": "test_map_reduce"})
 
         rlm_load_context(
             context_data=["item1", "item2", "item3"],
@@ -502,7 +502,7 @@ class TestRLMDecompositionStrategies:
         """Test hierarchical decomposition strategy."""
         from rlm_adk.tools.rlm_tools import rlm_load_context, rlm_query_context
 
-        ctx = SimpleToolContext({"rlm_session_id": "test_hierarchical"})
+        ctx = create_tool_context({"rlm_session_id": "test_hierarchical"})
 
         rlm_load_context(
             context_data={

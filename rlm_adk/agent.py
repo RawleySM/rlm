@@ -30,80 +30,81 @@ Requirements:
     pip install google-adk  # or: pip install rlm[rlm-adk]
 """
 
-from rlm_adk._compat import ADK_AVAILABLE, check_adk_available
+from google.adk.agents import Agent, LlmAgent, ParallelAgent, SequentialAgent
+from google.adk.tools import FunctionTool
 
-# Lazy initialization - agents are only created when accessed
-_parallel_erp_analysis = None
-_vendor_resolution_pipeline = None
-_root_agent = None
-_rlm_analyst_agent = None
+from rlm_adk.agents.erp_analyzer import (
+    alpha_erp_analyzer,
+    beta_erp_analyzer,
+    gamma_erp_analyzer,
+)
+from rlm_adk.agents.vendor_matcher import vendor_matcher_agent
+from rlm_adk.agents.view_generator import view_generator_agent
+
+# Import RLM workflow components
+from rlm_adk.agents.rlm_loop import (
+    make_rlm_completion_workflow,
+    make_rlm_iteration_loop,
+)
+from rlm_adk.callbacks import (
+    before_model_callback,
+    after_model_callback,
+    on_model_error_callback,
+)
+from rlm_adk.prompts import ROOT_AGENT_INSTRUCTION
+
+# Import all tools
+from rlm_adk.tools.databricks_repl import (
+    execute_python_code,
+    execute_sql_query,
+    get_repl_session_state,
+)
+from rlm_adk.tools.unity_catalog import (
+    create_view,
+    get_volume_metadata,
+    list_catalogs,
+    list_schemas,
+    list_tables,
+    list_volumes,
+    read_table_sample,
+)
+from rlm_adk.tools.vendor_resolution import (
+    create_vendor_mapping,
+    find_similar_vendors,
+    get_masterdata_vendor,
+    resolve_vendor_to_masterdata,
+    search_vendor_by_attributes,
+)
+from rlm_adk.tools.rlm_tools import (
+    rlm_execute_code,
+    rlm_load_context,
+    rlm_query_context,
+    rlm_get_session_state,
+    rlm_clear_session,
+)
+from rlm_adk.tools.context_loader import (
+    load_vendor_data_to_context,
+    load_custom_context,
+    load_query_results_to_context,
+)
 
 
-def _get_agents():
-    """Lazily initialize ADK agents when first accessed."""
-    global _parallel_erp_analysis, _vendor_resolution_pipeline, _root_agent, _rlm_analyst_agent
+def _clear_parent(agent):
+    if agent is not None and hasattr(agent, "parent_agent"):
+        agent.parent_agent = None
+    return agent
 
-    if _root_agent is not None:
-        return _parallel_erp_analysis, _vendor_resolution_pipeline, _root_agent, _rlm_analyst_agent
 
-    # Check ADK is available before importing
-    check_adk_available()
+# =========================================================================
+# RLM Analyst Agent: Recursive Decomposition for Large Data
+# =========================================================================
 
-    from google.adk.agents import Agent, ParallelAgent, SequentialAgent
-
-    from rlm_adk.agents.erp_analyzer import (
-        alpha_erp_analyzer,
-        beta_erp_analyzer,
-        gamma_erp_analyzer,
-    )
-    from rlm_adk.agents.vendor_matcher import vendor_matcher_agent
-    from rlm_adk.agents.view_generator import view_generator_agent
-
-    # Import all tools
-    from rlm_adk.tools.databricks_repl import (
-        execute_python_code,
-        execute_sql_query,
-        get_repl_session_state,
-    )
-    from rlm_adk.tools.unity_catalog import (
-        create_view,
-        get_volume_metadata,
-        list_catalogs,
-        list_schemas,
-        list_tables,
-        list_volumes,
-        read_table_sample,
-    )
-    from rlm_adk.tools.vendor_resolution import (
-        create_vendor_mapping,
-        find_similar_vendors,
-        get_masterdata_vendor,
-        resolve_vendor_to_masterdata,
-        search_vendor_by_attributes,
-    )
-    from rlm_adk.tools.rlm_tools import (
-        rlm_execute_code,
-        rlm_load_context,
-        rlm_query_context,
-        rlm_get_session_state,
-        rlm_clear_session,
-    )
-    from rlm_adk.tools.context_loader import (
-        load_vendor_data_to_context,
-        load_custom_context,
-        load_query_results_to_context,
-    )
-
-    # =========================================================================
-    # RLM Analyst Agent: Recursive Decomposition for Large Data
-    # =========================================================================
-
-    _rlm_analyst_agent = Agent(
-        name="rlm_analyst",
-        model="gemini-2.0-flash",
-        description="""RLM-powered analyst that uses recursive decomposition to analyze
-        large datasets. Uses llm_query() and llm_query_batched() for sub-LM calls.""",
-        instruction="""You are an RLM (Recursive Language Model) analyst. You have a unique
+rlm_analyst_agent = Agent(
+    name="rlm_analyst",
+    model="gemini-3.0-flash",
+    description="""RLM-powered analyst that uses recursive decomposition to analyze
+    large datasets. Uses llm_query() and llm_query_batched() for sub-LM calls.""",
+    instruction="""You are an RLM (Recursive Language Model) analyst. You have a unique
 capability: you can execute Python code that spawns sub-LM calls to analyze large contexts.
 
 **Your RLM Capabilities:**
@@ -159,244 +160,124 @@ print(f"FINAL: {final_answer}")
 
 Always explain your decomposition strategy before executing!
 """,
-        tools=[
-            # RLM REPL tools (primary)
-            rlm_execute_code,
-            rlm_load_context,
-            rlm_query_context,
-            rlm_get_session_state,
-            rlm_clear_session,
-            # Context loaders
-            load_vendor_data_to_context,
-            load_custom_context,
-            load_query_results_to_context,
-            # Data exploration (for context building)
-            list_catalogs,
-            list_schemas,
-            list_tables,
-            read_table_sample,
-            execute_sql_query,
-        ],
-        output_key="rlm_analysis_results",
-    )
+    tools=[
+        # RLM REPL tools (primary)
+        FunctionTool(rlm_execute_code),
+        FunctionTool(rlm_load_context),
+        FunctionTool(rlm_query_context),
+        FunctionTool(rlm_get_session_state),
+        FunctionTool(rlm_clear_session),
+        # Context loaders
+        FunctionTool(load_vendor_data_to_context),
+        FunctionTool(load_custom_context),
+        FunctionTool(load_query_results_to_context),
+        # Data exploration (for context building)
+        FunctionTool(list_catalogs),
+        FunctionTool(list_schemas),
+        FunctionTool(list_tables),
+        FunctionTool(read_table_sample),
+        FunctionTool(execute_sql_query),
+    ],
+    output_key="rlm_analysis_results",
+)
 
-    # =========================================================================
-    # Parallel Agent: Concurrent ERP Analysis
-    # =========================================================================
+# =========================================================================
+# Parallel Agent: Concurrent ERP Analysis
+# =========================================================================
 
-    _parallel_erp_analysis = ParallelAgent(
-        name="parallel_erp_analysis",
-        description="""Concurrent analysis of vendor data across all hospital chain ERP systems.
-        Runs analyzers for Alpha, Beta, and Gamma hospital chains simultaneously.""",
-        sub_agents=[
-            alpha_erp_analyzer,
-            beta_erp_analyzer,
-            gamma_erp_analyzer,
-        ],
-    )
+parallel_erp_analysis = ParallelAgent(
+    name="parallel_erp_analysis",
+    description="""Concurrent analysis of vendor data across all hospital chain ERP systems.
+    Runs analyzers for Alpha, Beta, and Gamma hospital chains simultaneously.""",
+    sub_agents=[
+        _clear_parent(alpha_erp_analyzer),
+        _clear_parent(beta_erp_analyzer),
+        _clear_parent(gamma_erp_analyzer),
+    ],
+)
 
-    # =========================================================================
-    # Sequential Agent: Complete Vendor Resolution Pipeline
-    # =========================================================================
+# =========================================================================
+# Sequential Agent: Complete Vendor Resolution Pipeline
+# =========================================================================
 
-    _vendor_resolution_pipeline = SequentialAgent(
-        name="vendor_resolution_pipeline",
-        description="""End-to-end vendor resolution workflow:
-        1. Parallel ERP analysis across all hospital chains
-        2. Vendor matching and masterdata resolution
-        3. Analytical view generation""",
-        sub_agents=[
-            _parallel_erp_analysis,   # Step 1: Analyze all ERPs concurrently
-            vendor_matcher_agent,     # Step 2: Match and resolve vendors
-            view_generator_agent,     # Step 3: Create unified views
-        ],
-    )
+vendor_resolution_pipeline = SequentialAgent(
+    name="vendor_resolution_pipeline",
+    description="""End-to-end vendor resolution workflow:
+    1. Parallel ERP analysis across all hospital chains
+    2. Vendor matching and masterdata resolution
+    3. Analytical view generation""",
+    sub_agents=[
+        _clear_parent(parallel_erp_analysis),   # Step 1: Analyze all ERPs concurrently
+        _clear_parent(vendor_matcher_agent),     # Step 2: Match and resolve vendors
+        _clear_parent(view_generator_agent),     # Step 3: Create unified views
+    ],
+)
 
-    # =========================================================================
-    # Root Agent: Data Scientist Interface with RLM Integration
-    # =========================================================================
+# =========================================================================
+# RLM Workflow Agents: Full Recursive Decomposition Pipeline
+# =========================================================================
 
-    _root_agent = Agent(
-        name="rlm_data_scientist",
-        model="gemini-2.0-flash",
-        description="""Healthcare data scientist with RLM (Recursive Language Model) capabilities.
-        Can programmatically decompose large vendor resolution problems using sub-LM calls.""",
-        instruction="""You are an expert data scientist with RLM (Recursive Language Model) capabilities
-for healthcare vendor master data management.
+# Full RLM completion workflow (nested LoopAgent)
+rlm_workflow = make_rlm_completion_workflow(max_iterations=10)
 
-**Your Environment:**
-You work with a Databricks workspace containing Unity Catalog volumes with data from:
-- Multiple hospital chain ERP systems (Alpha, Beta, Gamma)
-- A masterdata vendor database for golden record management
+# Direct access to just the iteration loop
+rlm_loop = make_rlm_iteration_loop(max_iterations=10)
 
-**RLM CAPABILITIES (Key Differentiator):**
+# =========================================================================
+# Root Agent: Data Scientist Interface with RLM Integration
+# =========================================================================
 
-You have access to the RLM paradigm which allows you to:
-
-1. **Offload Context**: Load large datasets into the REPL's `context` variable
-   - Use `load_vendor_data_to_context` for vendor data
-   - Use `load_query_results_to_context` for SQL results
-
-2. **Recursive Sub-LM Calls**: Execute code with `llm_query()` access
-   - `rlm_execute_code` - Run Python with `context`, `llm_query()`, `llm_query_batched()`
-   - The LM can spawn sub-LM calls to decompose large problems
-
-3. **Decomposition Strategies**:
-   - `rlm_query_context` with strategy="chunk_and_aggregate" - Split and combine
-   - `rlm_query_context` with strategy="map_reduce" - Map then reduce
-   - `rlm_query_context` with strategy="iterative" - Sequential with state
-
-**When to Use RLM Pattern:**
-- Analyzing thousands of vendor records across chains
-- Finding duplicates that require semantic understanding
-- Complex aggregation across multiple data sources
-- When simple tools aren't sufficient
-
-**Example RLM Workflow:**
-```
-1. load_vendor_data_to_context(["hospital_chain_alpha", "hospital_chain_beta"], True)
-2. rlm_query_context("Find all vendor duplicates based on tax ID and name similarity", "chunk_and_aggregate")
-```
-
-Or for custom logic:
-```
-1. load_vendor_data_to_context(...)
-2. rlm_execute_code('''
-   # Custom decomposition with llm_query
-   for chain, data in context.items():
-       analysis = llm_query(f"Analyze {chain} vendors: {data}")
-       print(analysis)
-   ''')
-```
-
-**Standard Capabilities (Non-RLM):**
-
-1. **Data Exploration:**
-   - List and explore Unity Catalogs, schemas, tables, and volumes
-   - Sample and analyze table data
-   - Execute SQL queries and Python code
-
-2. **Vendor Analysis:**
-   - Find similar vendors across hospital chains
-   - Search vendors by attributes (Tax ID, DUNS, address)
-   - Identify potential duplicate vendor records
-
-3. **Masterdata Management:**
-   - Resolve vendor records to masterdata golden records
-   - Create new masterdata vendor entities
-   - Build vendor mappings with confidence scores
-
-4. **Analytical Views:**
-   - Create views joining data across hospital chains
-   - Build unified vendor reporting views
-
-**Workflow Options:**
-
-A. **RLM Analysis (Recommended for Large Data):**
-   - Load context → Execute with llm_query → Get decomposed results
-   - Delegate to `rlm_analyst` for complex recursive analysis
-
-B. **Direct Tool Use (Quick Queries):**
-   - Use individual tools for specific tasks
-   - Great for: Quick lookups, single-table queries
-
-C. **Pipeline Execution (End-to-End):**
-   - Delegate to `vendor_resolution_pipeline` for full workflow
-   - Great for: Initial setup, comprehensive processing
-
-**Communication Style:**
-- Explain your approach before executing (especially RLM decomposition strategy)
-- Provide clear summaries of findings
-- Highlight when RLM pattern would be beneficial
-- Use tables and structured output for complex results
-
-Always be helpful, thorough, and leverage RLM for large-scale analysis!
-""",
-        tools=[
-            # RLM REPL tools (PRIMARY - for recursive decomposition)
-            rlm_execute_code,
-            rlm_load_context,
-            rlm_query_context,
-            rlm_get_session_state,
-            rlm_clear_session,
-            # Context loaders
-            load_vendor_data_to_context,
-            load_custom_context,
-            load_query_results_to_context,
-            # Data exploration tools
-            list_catalogs,
-            list_schemas,
-            list_tables,
-            list_volumes,
-            get_volume_metadata,
-            read_table_sample,
-            # Databricks REPL tools
-            execute_sql_query,
-            execute_python_code,
-            get_repl_session_state,
-            # Vendor resolution tools
-            find_similar_vendors,
-            search_vendor_by_attributes,
-            get_masterdata_vendor,
-            resolve_vendor_to_masterdata,
-            create_vendor_mapping,
-            # View creation
-            create_view,
-        ],
-        sub_agents=[
-            _rlm_analyst_agent,            # RLM-powered analysis
-            _vendor_resolution_pipeline,   # Full pipeline delegation
-            _parallel_erp_analysis,        # Just the parallel analysis
-            vendor_matcher_agent,          # Just vendor matching
-            view_generator_agent,          # Just view generation
-        ],
-    )
-
-    return _parallel_erp_analysis, _vendor_resolution_pipeline, _root_agent, _rlm_analyst_agent
-
-
-class _LazyAgent:
-    """Lazy proxy for ADK agents that initializes on first access."""
-
-    def __init__(self, name: str, index: int):
-        self._name = name
-        self._index = index
-        self._agent = None
-
-    def _ensure_loaded(self):
-        if self._agent is None:
-            agents = _get_agents()
-            self._agent = agents[self._index]
-        return self._agent
-
-    def __getattr__(self, name):
-        return getattr(self._ensure_loaded(), name)
-
-    def __repr__(self):
-        if ADK_AVAILABLE:
-            return repr(self._ensure_loaded())
-        return f"<LazyAgent({self._name}) - google-adk not installed>"
-
-
-# Create lazy proxies for the agents
-parallel_erp_analysis = _LazyAgent("parallel_erp_analysis", 0)
-vendor_resolution_pipeline = _LazyAgent("vendor_resolution_pipeline", 1)
-root_agent = _LazyAgent("root_agent", 2)
-rlm_analyst_agent = _LazyAgent("rlm_analyst", 3)
-
-
-# Also export the sub-agents when accessed through this module
-def __getattr__(name):
-    """Module-level getattr for lazy agent access."""
-    if name == "vendor_matcher_agent":
-        check_adk_available()
-        from rlm_adk.agents.vendor_matcher import vendor_matcher_agent
-        return vendor_matcher_agent
-    elif name == "view_generator_agent":
-        check_adk_available()
-        from rlm_adk.agents.view_generator import view_generator_agent
-        return view_generator_agent
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+root_agent = LlmAgent(
+    name="rlm_data_scientist",
+    model="gemini-3.0",
+    description="""Healthcare data scientist with full RLM recursive decomposition capabilities.
+    Can programmatically decompose large vendor resolution problems using sub-LM calls.""",
+    instruction=ROOT_AGENT_INSTRUCTION,  # From rlm_adk/prompts.py
+    tools=[
+        # Direct RLM tools for simple cases
+        FunctionTool(rlm_execute_code),
+        FunctionTool(rlm_load_context),
+        FunctionTool(rlm_query_context),
+        FunctionTool(rlm_get_session_state),
+        FunctionTool(rlm_clear_session),
+        # Context loaders
+        FunctionTool(load_vendor_data_to_context),
+        FunctionTool(load_custom_context),
+        FunctionTool(load_query_results_to_context),
+        # Data exploration tools
+        FunctionTool(list_catalogs),
+        FunctionTool(list_schemas),
+        FunctionTool(list_tables),
+        FunctionTool(list_volumes),
+        FunctionTool(get_volume_metadata),
+        FunctionTool(read_table_sample),
+        # Databricks REPL tools
+        FunctionTool(execute_sql_query),
+        FunctionTool(execute_python_code),
+        FunctionTool(get_repl_session_state),
+        # Vendor resolution tools
+        FunctionTool(find_similar_vendors),
+        FunctionTool(search_vendor_by_attributes),
+        FunctionTool(get_masterdata_vendor),
+        FunctionTool(resolve_vendor_to_masterdata),
+        FunctionTool(create_vendor_mapping),
+        # View creation
+        FunctionTool(create_view),
+    ],
+    sub_agents=[
+        _clear_parent(rlm_workflow),                # Full RLM workflow (recommended)
+        _clear_parent(rlm_loop),                    # Just the iteration loop
+        _clear_parent(rlm_analyst_agent),          # Legacy RLM analyst
+        _clear_parent(vendor_resolution_pipeline), # Standard pipeline
+        _clear_parent(parallel_erp_analysis),      # Parallel ERP analysis
+        _clear_parent(vendor_matcher_agent),        # Direct vendor matching
+        _clear_parent(view_generator_agent),        # Direct view generation
+    ],
+    # Root agent callbacks for metrics
+    before_model_callback=before_model_callback,
+    after_model_callback=after_model_callback,
+    on_model_error_callback=on_model_error_callback,
+)
 
 
 # =============================================================================
@@ -410,5 +291,4 @@ __all__ = [
     "parallel_erp_analysis",
     "vendor_matcher_agent",
     "view_generator_agent",
-    "ADK_AVAILABLE",
 ]

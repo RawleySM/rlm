@@ -12,14 +12,14 @@ programmatically examine and decompose them using llm_query() calls.
 import os
 from typing import Any
 
-from rlm_adk._compat import ToolContextProtocol
+from google.adk.tools import ToolContext
 from rlm_adk.tools.rlm_tools import rlm_load_context
 
 
 def load_vendor_data_to_context(
     hospital_chains: list[str],
     include_masterdata: bool,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Load vendor data from multiple hospital chains into RLM context.
 
@@ -110,7 +110,7 @@ def load_vendor_data_to_context(
         }
 
 
-def _load_chain_data(chain_name: str, tool_context: ToolContextProtocol) -> dict | None:
+def _load_chain_data(chain_name: str, tool_context: ToolContext) -> dict | None:
     """Load vendor data from a hospital chain catalog."""
     # Check for Databricks connection
     databricks_host = os.getenv("DATABRICKS_HOST")
@@ -141,7 +141,7 @@ def _load_chain_data(chain_name: str, tool_context: ToolContextProtocol) -> dict
     return chain_data if chain_data else None
 
 
-def _load_masterdata(tool_context: ToolContextProtocol) -> dict | None:
+def _load_masterdata(tool_context: ToolContext) -> dict | None:
     """Load masterdata vendor records."""
     databricks_host = os.getenv("DATABRICKS_HOST")
 
@@ -262,7 +262,7 @@ def _simulate_masterdata() -> dict:
 def load_custom_context(
     data: Any,
     description: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Load custom data into the RLM context.
 
@@ -295,7 +295,7 @@ def load_custom_context(
 def load_query_results_to_context(
     sql_query: str,
     description: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Execute a SQL query and load results into RLM context.
 

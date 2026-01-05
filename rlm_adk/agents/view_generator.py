@@ -6,21 +6,26 @@ join data across hospital chains and masterdata for unified reporting.
 Requires: google-adk (pip install google-adk)
 """
 
-from rlm_adk._compat import ADK_AVAILABLE, check_adk_available
+"""View Generator agent for creating analytical views.
+
+Provides an agent specialized in creating Unity Catalog views that
+join data across hospital chains and masterdata for unified reporting.
+
+Requires: google-adk (pip install google-adk)
+"""
+
+from google.adk.agents import Agent
+from google.adk.tools import FunctionTool
+
+from rlm_adk.tools.databricks_repl import execute_python_code, execute_sql_query
+from rlm_adk.tools.unity_catalog import create_view, list_schemas, list_tables
 
 
-def _create_view_generator():
+def create_view_generator() -> Agent:
     """Create the view generator agent."""
-    check_adk_available()
-
-    from google.adk.agents import Agent
-
-    from rlm_adk.tools.databricks_repl import execute_python_code, execute_sql_query
-    from rlm_adk.tools.unity_catalog import create_view, list_schemas, list_tables
-
     return Agent(
         name="view_generator",
-        model="gemini-2.0-flash",
+        model="gemini-3-pro",
         description="Creates analytical views joining hospital ERP data with resolved masterdata vendors.",
         instruction="""You are a data engineer specializing in building analytical data models.
 
@@ -79,46 +84,14 @@ For each view created, provide:
 Store created view definitions in state key 'created_views'.
 """,
         tools=[
-            list_schemas,
-            list_tables,
-            create_view,
-            execute_sql_query,
-            execute_python_code,
+            FunctionTool(list_schemas),
+            FunctionTool(list_tables),
+            FunctionTool(create_view),
+            FunctionTool(execute_sql_query),
+            FunctionTool(execute_python_code),
         ],
         output_key="created_views",
     )
 
 
-class _LazyViewGenerator:
-    """Lazy proxy for view generator agent."""
-
-    def __init__(self):
-        self._agent = None
-
-    def _ensure_loaded(self):
-        if self._agent is None:
-            self._agent = _create_view_generator()
-        return self._agent
-
-    @property
-    def name(self):
-        return "view_generator"
-
-    @property
-    def output_key(self):
-        return "created_views"
-
-    @property
-    def tools(self):
-        return self._ensure_loaded().tools
-
-    def __getattr__(self, name):
-        return getattr(self._ensure_loaded(), name)
-
-    def __repr__(self):
-        if ADK_AVAILABLE:
-            return repr(self._ensure_loaded())
-        return "<LazyViewGenerator - google-adk not installed>"
-
-
-view_generator_agent = _LazyViewGenerator()
+view_generator_agent = create_view_generator()

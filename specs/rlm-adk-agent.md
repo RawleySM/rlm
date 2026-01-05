@@ -2,7 +2,7 @@
 
 ## Full RLM Integration with ADK LoopAgent
 
-**Version:** 2.0 (Revised)
+**Version:** 3.0 (Enhanced with Callbacks & System Prompt Integration)
 **Status:** Approved for Implementation
 **Last Updated:** 2026-01-05
 
@@ -19,6 +19,9 @@ This specification describes the implementation of a full Recursive Language Mod
 3. **Explicit iteration history** passed via state for feedback loop
 4. **`BaseAgent`** for completion checker to enable escalation
 5. **Nested workflow agents**: `SequentialAgent` → `LoopAgent` → sub-agents
+6. **Reuse legacy RLM system prompt** from `rlm/utils/prompts.py` with domain-specific extensions
+7. **ADK Callbacks** for state management, error handling, and structured metadata
+8. **`custom_metadata`** for typed communication between REPL orchestration and sub-agents
 
 ---
 
@@ -27,6 +30,7 @@ This specification describes the implementation of a full Recursive Language Mod
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         root_agent (LlmAgent)                                │
+│                         [with RLM callbacks attached]                        │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
 │  │              rlm_completion_workflow (SequentialAgent)                 │  │
 │  │                                                                        │  │
@@ -38,20 +42,27 @@ This specification describes the implementation of a full Recursive Language Mod
 │  │                                 ↓                                      │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐ │  │
 │  │  │  Step 2: rlm_iteration_loop (LoopAgent) [max_iterations=10]      │ │  │
+│  │  │  [before_agent_callback: initialize iteration state]             │ │  │
+│  │  │  [after_agent_callback: finalize metrics & cleanup]              │ │  │
 │  │  │                                                                   │ │  │
 │  │  │    ┌────────────────────────────────────────────────────────┐    │ │  │
 │  │  │    │ 2a. code_generator (LlmAgent)                          │    │ │  │
+│  │  │    │     [before_model_callback: inject iteration_history]  │    │ │  │
+│  │  │    │     [after_model_callback: extract custom_metadata]    │    │ │  │
+│  │  │    │     - Uses: RLM_SYSTEM_PROMPT + HEALTHCARE_EXTENSION   │    │ │  │
 │  │  │    │     - Sees: {iteration_history}, {context_description} │    │ │  │
 │  │  │    │     - Generates Python with llm_query() calls          │    │ │  │
-│  │  │    │     - Output: generated_code                           │    │ │  │
+│  │  │    │     - Output: generated_code + custom_metadata         │    │ │  │
 │  │  │    └────────────────────────────────────────────────────────┘    │ │  │
 │  │  │                              ↓                                    │ │  │
 │  │  │    ┌────────────────────────────────────────────────────────┐    │ │  │
 │  │  │    │ 2b. code_executor (LlmAgent)                           │    │ │  │
+│  │  │    │     [before_tool_callback: validate code blocks]       │    │ │  │
+│  │  │    │     [after_tool_callback: capture execution metrics]   │    │ │  │
 │  │  │    │     - Extracts code blocks from generated_code         │    │ │  │
 │  │  │    │     - Executes in REPL with REAL llm_query bridge      │    │ │  │
 │  │  │    │     - Appends to iteration_history                     │    │ │  │
-│  │  │    │     - Output: execution_result                         │    │ │  │
+│  │  │    │     - Output: execution_result + custom_metadata       │    │ │  │
 │  │  │    └────────────────────────────────────────────────────────┘    │ │  │
 │  │  │                              ↓                                    │ │  │
 │  │  │    ┌────────────────────────────────────────────────────────┐    │ │  │
@@ -84,6 +95,10 @@ This specification describes the implementation of a full Recursive Language Mod
 | **llm_query_batched()** | Concurrent calls via `asyncio.gather()` | ✅ |
 | **Iterative Execution** | `LoopAgent` with explicit `iteration_history` in state | ✅ |
 | **FINAL Termination** | `BaseAgent` detects patterns and escalates | ✅ |
+| **Legacy System Prompt** | Import `RLM_SYSTEM_PROMPT` from `rlm/utils/prompts.py` | ✅ |
+| **State Management** | ADK Callbacks manage state transitions and persistence | ✅ |
+| **Error Handling** | Callbacks provide graceful error recovery | ✅ |
+| **Structured Output** | `custom_metadata` enables typed REPL↔sub-agent communication | ✅ |
 
 ---
 
@@ -98,6 +113,9 @@ rlm_adk/
 ├── rlm_repl.py                   # Existing REPL environment
 ├── rlm_state.py                  # NEW: Iteration state management
 ├── llm_bridge.py                 # NEW: Real llm_query implementation
+├── prompts.py                    # NEW: System prompt composition
+├── callbacks.py                  # NEW: ADK callback implementations
+├── metadata.py                   # NEW: custom_metadata schemas
 ├── agent.py                      # UPDATED: Root agent with workflows
 ├── agents/
 │   ├── __init__.py
@@ -121,7 +139,863 @@ rlm_adk/
 
 ---
 
-## Step 1: RLM State Manager
+## Step 1: System Prompt Composition
+
+**File:** `rlm_adk/prompts.py`
+
+This module imports the battle-tested `RLM_SYSTEM_PROMPT` from the legacy RLM codebase and extends it with healthcare/data-science specific instructions.
+
+```python
+"""System prompt composition for RLM-ADK integration.
+
+This module composes the final system prompts by:
+1. Importing the legacy RLM_SYSTEM_PROMPT from rlm/utils/prompts.py
+2. Appending domain-specific extensions (healthcare vendor management)
+3. Providing utility functions for dynamic prompt building
+"""
+
+from __future__ import annotations
+
+from rlm.utils.prompts import RLM_SYSTEM_PROMPT, build_rlm_system_prompt, build_user_prompt
+
+# =============================================================================
+# Healthcare Data Science Extension
+# =============================================================================
+
+HEALTHCARE_VENDOR_EXTENSION = '''
+## Healthcare Vendor Management Context
+
+You are working in a healthcare vendor master data management environment with access to:
+
+**Data Sources:**
+- Multiple hospital chain ERP systems (Alpha, Beta, Gamma)
+- Masterdata vendor database with golden records
+- Unity Catalog volumes containing vendor data
+
+**Domain-Specific Capabilities:**
+
+1. **Vendor Resolution**: Match vendor instances across hospital chains to masterdata
+   - Use Tax ID, DUNS number, and address for matching
+   - Consider name variations and fuzzy matching
+   - Assign confidence scores to matches
+
+2. **Duplicate Detection**: Find potential duplicate vendors
+   - Within a single hospital chain
+   - Across multiple chains
+   - Against masterdata golden records
+
+3. **Data Quality Analysis**: Assess vendor data quality
+   - Missing critical fields (Tax ID, address)
+   - Inconsistent naming conventions
+   - Outdated contact information
+
+**Best Practices:**
+- When analyzing vendors, prioritize Tax ID matches (most reliable)
+- Use `llm_query_batched()` for parallel analysis across chains
+- Chunk large vendor datasets (1000+ records) before analysis
+- Aggregate findings with a final `llm_query()` summarization
+'''
+
+# =============================================================================
+# Composed System Prompts
+# =============================================================================
+
+def get_rlm_system_prompt(include_healthcare_extension: bool = True) -> str:
+    """Get the composed RLM system prompt.
+    
+    Args:
+        include_healthcare_extension: Whether to append healthcare-specific context.
+        
+    Returns:
+        Complete system prompt string.
+    """
+    base_prompt = RLM_SYSTEM_PROMPT
+    
+    if include_healthcare_extension:
+        return base_prompt + "\n\n" + HEALTHCARE_VENDOR_EXTENSION
+    
+    return base_prompt
+
+
+def get_code_generator_instruction(
+    context_description: str = "",
+    iteration_history: str = "(No previous iterations)",
+    user_query: str = "",
+) -> str:
+    """Build the code generator instruction with dynamic state.
+    
+    This combines the RLM system prompt with current iteration state.
+    
+    Args:
+        context_description: Description of loaded context data.
+        iteration_history: Formatted history of previous iterations.
+        user_query: The user's original query.
+        
+    Returns:
+        Complete instruction for the code generator agent.
+    """
+    base_instruction = get_rlm_system_prompt(include_healthcare_extension=True)
+    
+    dynamic_section = f'''
+## Current Session State
+
+### Context Description
+{context_description or "(No context loaded yet)"}
+
+### Previous Iterations
+{iteration_history}
+
+### User Query
+{user_query or "(Awaiting user query)"}
+
+## Instructions
+
+Based on the context and any previous execution results, write the NEXT code block.
+Use the REPL environment with `llm_query()` and `llm_query_batched()` for recursive analysis.
+'''
+    
+    return base_instruction + "\n\n" + dynamic_section
+
+
+# =============================================================================
+# Root Agent Instruction (Healthcare Data Scientist)
+# =============================================================================
+
+ROOT_AGENT_INSTRUCTION = '''You are an expert data scientist specializing in healthcare vendor management with RLM (Recursive Language Model) capabilities.
+
+''' + RLM_SYSTEM_PROMPT + '''
+
+''' + HEALTHCARE_VENDOR_EXTENSION + '''
+
+## Available Workflows
+
+### 1. Full RLM Workflow (RECOMMENDED for Complex Analysis)
+**Delegate to:** `rlm_completion_workflow`
+
+Use this for:
+- Large-scale vendor resolution across multiple hospital chains
+- Complex data analysis requiring iterative refinement
+- Problems that benefit from recursive decomposition
+- When the data is too large to analyze in a single pass
+
+The workflow automatically:
+1. Loads context from Unity Catalog
+2. Iteratively generates and executes code with llm_query()
+3. Continues until a FINAL answer is produced
+4. Formats results for presentation
+
+### 2. Direct RLM Tools (For Simple Cases)
+Use these tools directly for simpler tasks:
+
+- **rlm_load_context**: Load data into REPL context
+- **rlm_execute_code**: Execute a single code block with llm_query() access
+- **rlm_query_context**: Apply pre-built decomposition strategies
+
+### 3. Pipeline Delegation
+**Delegate to:** `vendor_resolution_pipeline`
+
+Use for standard vendor resolution workflow:
+1. Parallel ERP analysis across hospital chains
+2. Vendor matching to masterdata
+3. View generation
+
+## When to Use RLM
+
+Use the RLM workflow when:
+- Data size exceeds what can be processed in one LLM call
+- The problem requires breaking down into sub-problems
+- You need to iteratively refine analysis based on intermediate results
+- Concurrent analysis of independent data chunks would be beneficial
+
+## Important Notes
+
+- The RLM system uses REAL LLM calls for llm_query() - not simulations
+- Variables persist across iterations in the REPL
+- Use llm_query_batched() for concurrent processing of independent chunks
+- The system will automatically terminate when FINAL() is called or max iterations reached
+'''
+```
+
+---
+
+## Step 2: ADK Callbacks for State Management & Error Handling
+
+**File:** `rlm_adk/callbacks.py`
+
+This module implements ADK callbacks for comprehensive control over agent execution.
+
+```python
+"""ADK Callbacks for RLM state management, error handling, and metrics.
+
+Callbacks provide hooks at key execution points:
+- before_agent / after_agent: Agent lifecycle
+- before_model / after_model: LLM request/response
+- before_tool / after_tool: Tool execution
+"""
+
+from __future__ import annotations
+
+import time
+import traceback
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from google.adk.agents.callback_context import CallbackContext
+    from google.adk.models import LlmRequest, LlmResponse
+    from google.adk.tools import ToolContext
+
+from rlm_adk.metadata import RLMExecutionMetadata, RLMIterationMetadata
+from rlm_adk.rlm_state import get_or_create_rlm_state
+
+
+# =============================================================================
+# Callback Context Keys
+# =============================================================================
+
+STATE_KEY_RLM_METRICS = "_rlm_metrics"
+STATE_KEY_ITERATION_START = "_rlm_iteration_start_time"
+STATE_KEY_MODEL_LATENCIES = "_rlm_model_latencies"
+STATE_KEY_TOOL_ERRORS = "_rlm_tool_errors"
+
+
+# =============================================================================
+# Before Agent Callbacks
+# =============================================================================
+
+def before_rlm_loop_callback(
+    callback_context: "CallbackContext",
+) -> None:
+    """Initialize RLM state before the iteration loop begins.
+    
+    This callback:
+    1. Initializes RLM session state if not present
+    2. Records loop start time for metrics
+    3. Prepares iteration tracking structures
+    
+    Args:
+        callback_context: ADK callback context with state access.
+    """
+    state = callback_context.state
+    
+    # Initialize RLM state
+    session_id = state.get("rlm_session_id", "default")
+    rlm_state = get_or_create_rlm_state(state, session_id)
+    
+    # Initialize metrics tracking
+    if STATE_KEY_RLM_METRICS not in state:
+        state[STATE_KEY_RLM_METRICS] = {
+            "loop_start_time": time.time(),
+            "total_model_calls": 0,
+            "total_tool_calls": 0,
+            "total_sub_lm_calls": 0,
+            "errors_recovered": 0,
+            "model_latencies_ms": [],
+            "tool_latencies_ms": [],
+        }
+    
+    # Record iteration start
+    state[STATE_KEY_ITERATION_START] = time.time()
+    
+    print(f"[RLM] Starting iteration loop (session: {session_id})")
+
+
+def before_code_generator_callback(
+    callback_context: "CallbackContext",
+) -> None:
+    """Prepare state before code generation.
+    
+    Ensures iteration_history and context_description are available.
+    """
+    state = callback_context.state
+    
+    # Ensure iteration history is available
+    if "iteration_history" not in state:
+        session_id = state.get("rlm_session_id", "default")
+        rlm_state = get_or_create_rlm_state(state, session_id)
+        state["iteration_history"] = rlm_state.iteration_history
+
+
+# =============================================================================
+# After Agent Callbacks
+# =============================================================================
+
+def after_rlm_loop_callback(
+    callback_context: "CallbackContext",
+) -> None:
+    """Finalize metrics and cleanup after the iteration loop completes.
+    
+    This callback:
+    1. Calculates total execution time
+    2. Aggregates metrics from all iterations
+    3. Stores final metrics in state for reporting
+    """
+    state = callback_context.state
+    metrics = state.get(STATE_KEY_RLM_METRICS, {})
+    
+    if "loop_start_time" in metrics:
+        total_time = time.time() - metrics["loop_start_time"]
+        metrics["total_execution_time_seconds"] = round(total_time, 2)
+    
+    # Get final RLM state
+    session_id = state.get("rlm_session_id", "default")
+    rlm_state = get_or_create_rlm_state(state, session_id)
+    
+    metrics["final_iteration_count"] = rlm_state.iteration_count
+    metrics["total_sub_lm_calls"] = rlm_state.total_llm_calls
+    
+    # Store for result formatter
+    state["rlm_execution_metrics"] = metrics
+    
+    print(f"[RLM] Loop complete: {rlm_state.iteration_count} iterations, "
+          f"{rlm_state.total_llm_calls} sub-LM calls, "
+          f"{metrics.get('total_execution_time_seconds', 0)}s total")
+
+
+# =============================================================================
+# Before Model Callbacks
+# =============================================================================
+
+def before_model_callback(
+    callback_context: "CallbackContext",
+    llm_request: "LlmRequest",
+) -> Optional["LlmResponse"]:
+    """Inspect/modify LLM request before sending.
+    
+    This callback:
+    1. Injects iteration_history into the prompt if needed
+    2. Records model call timing
+    3. Can short-circuit with a cached response if appropriate
+    
+    Args:
+        callback_context: ADK callback context.
+        llm_request: The LLM request about to be sent.
+        
+    Returns:
+        None to proceed with model call, or LlmResponse to short-circuit.
+    """
+    state = callback_context.state
+    
+    # Record timing
+    state["_model_call_start"] = time.time()
+    
+    # Track call count
+    metrics = state.get(STATE_KEY_RLM_METRICS, {})
+    metrics["total_model_calls"] = metrics.get("total_model_calls", 0) + 1
+    state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # Log for debugging (can be disabled in production)
+    agent_name = callback_context.agent_name
+    print(f"[RLM] Model call from {agent_name}")
+    
+    return None  # Proceed with model call
+
+
+def before_model_with_history_injection(
+    callback_context: "CallbackContext",
+    llm_request: "LlmRequest",
+) -> Optional["LlmResponse"]:
+    """Before-model callback that injects iteration history into prompts.
+    
+    Use this for the code_generator agent to ensure it sees full history.
+    """
+    state = callback_context.state
+    
+    # Standard timing/metrics
+    state["_model_call_start"] = time.time()
+    
+    # Get iteration history
+    iteration_history = state.get("iteration_history", "(No previous iterations)")
+    context_description = state.get("context_description", "(No context loaded)")
+    
+    # The LlmRequest contents can be modified here if needed
+    # For ADK, we typically rely on state being available in the instruction template
+    # But this hook allows for dynamic injection if the prompt structure requires it
+    
+    return None
+
+
+# =============================================================================
+# After Model Callbacks
+# =============================================================================
+
+def after_model_callback(
+    callback_context: "CallbackContext",
+    llm_response: "LlmResponse",
+) -> "LlmResponse":
+    """Process LLM response after receiving.
+    
+    This callback:
+    1. Records latency metrics
+    2. Extracts custom_metadata from response if present
+    3. Validates response structure
+    4. Can modify response before it's used
+    
+    Args:
+        callback_context: ADK callback context.
+        llm_response: The LLM response received.
+        
+    Returns:
+        The (potentially modified) LlmResponse.
+    """
+    state = callback_context.state
+    
+    # Calculate latency
+    start_time = state.pop("_model_call_start", None)
+    if start_time:
+        latency_ms = (time.time() - start_time) * 1000
+        metrics = state.get(STATE_KEY_RLM_METRICS, {})
+        latencies = metrics.get("model_latencies_ms", [])
+        latencies.append(round(latency_ms, 1))
+        metrics["model_latencies_ms"] = latencies
+        state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # Extract or set custom_metadata
+    # ADK's LlmResponse may have custom_metadata field
+    if hasattr(llm_response, "custom_metadata") and llm_response.custom_metadata:
+        # Store metadata for downstream processing
+        state["_last_model_metadata"] = llm_response.custom_metadata
+    else:
+        # Set default metadata structure
+        llm_response.custom_metadata = {
+            "source": "rlm_code_generator",
+            "iteration": state.get("_rlm_current_iteration", 0),
+            "has_code_blocks": "```" in (llm_response.text or ""),
+        }
+    
+    return llm_response
+
+
+def after_model_extract_code_metadata(
+    callback_context: "CallbackContext",
+    llm_response: "LlmResponse",
+) -> "LlmResponse":
+    """After-model callback that extracts code block metadata.
+    
+    Analyzes the response to populate custom_metadata with:
+    - Number of code blocks
+    - Whether FINAL pattern is present
+    - Code complexity hints
+    """
+    from rlm_adk.rlm_repl import find_code_blocks, find_final_answer
+    
+    state = callback_context.state
+    response_text = llm_response.text or ""
+    
+    # Analyze response
+    code_blocks = find_code_blocks(response_text)
+    final_answer = find_final_answer(response_text)
+    
+    # Build structured metadata
+    metadata = RLMIterationMetadata(
+        iteration_number=state.get("_rlm_current_iteration", 0),
+        code_block_count=len(code_blocks),
+        has_llm_query=any("llm_query" in block for block in code_blocks),
+        has_llm_query_batched=any("llm_query_batched" in block for block in code_blocks),
+        has_final_answer=final_answer is not None,
+        final_answer_type="FINAL_VAR" if final_answer and "__FINAL_VAR__" in final_answer else (
+            "FINAL" if final_answer else None
+        ),
+    )
+    
+    # Store as dict for JSON serialization
+    llm_response.custom_metadata = metadata.to_dict()
+    state["_last_iteration_metadata"] = metadata.to_dict()
+    
+    return llm_response
+
+
+# =============================================================================
+# Before Tool Callbacks
+# =============================================================================
+
+def before_tool_callback(
+    callback_context: "CallbackContext",
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Validate and potentially modify tool inputs.
+    
+    This callback:
+    1. Validates tool arguments
+    2. Records tool call timing
+    3. Can short-circuit with a result if appropriate
+    
+    Args:
+        callback_context: ADK callback context.
+        tool_name: Name of the tool being called.
+        tool_args: Arguments being passed to the tool.
+        
+    Returns:
+        None to proceed, or dict to short-circuit with result.
+    """
+    state = callback_context.state
+    
+    # Record timing
+    state["_tool_call_start"] = time.time()
+    state["_tool_call_name"] = tool_name
+    
+    # Track call count
+    metrics = state.get(STATE_KEY_RLM_METRICS, {})
+    metrics["total_tool_calls"] = metrics.get("total_tool_calls", 0) + 1
+    state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # Validate specific tools
+    if tool_name == "execute_rlm_iteration":
+        generated_code = state.get("generated_code", "")
+        if not generated_code:
+            return {
+                "status": "error",
+                "error_message": "No generated_code in state - code_generator may have failed",
+                "stdout": "",
+                "stderr": "",
+            }
+    
+    return None  # Proceed with tool call
+
+
+# =============================================================================
+# After Tool Callbacks
+# =============================================================================
+
+def after_tool_callback(
+    callback_context: "CallbackContext",
+    tool_name: str,
+    tool_result: Any,
+) -> Any:
+    """Process tool result and handle errors.
+    
+    This callback:
+    1. Records latency metrics
+    2. Handles errors gracefully
+    3. Updates RLM state with execution results
+    4. Attaches custom_metadata to results
+    
+    Args:
+        callback_context: ADK callback context.
+        tool_name: Name of the tool that was called.
+        tool_result: Result from the tool execution.
+        
+    Returns:
+        The (potentially modified) tool result.
+    """
+    state = callback_context.state
+    
+    # Calculate latency
+    start_time = state.pop("_tool_call_start", None)
+    if start_time:
+        latency_ms = (time.time() - start_time) * 1000
+        metrics = state.get(STATE_KEY_RLM_METRICS, {})
+        latencies = metrics.get("tool_latencies_ms", [])
+        latencies.append(round(latency_ms, 1))
+        metrics["tool_latencies_ms"] = latencies
+        state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # Handle errors
+    if isinstance(tool_result, dict) and tool_result.get("status") == "error":
+        error_msg = tool_result.get("error_message", "Unknown error")
+        metrics = state.get(STATE_KEY_RLM_METRICS, {})
+        
+        # Track errors
+        errors = state.get(STATE_KEY_TOOL_ERRORS, [])
+        errors.append({
+            "tool": tool_name,
+            "error": error_msg,
+            "iteration": state.get("_rlm_current_iteration", 0),
+        })
+        state[STATE_KEY_TOOL_ERRORS] = errors
+        
+        print(f"[RLM] Tool error in {tool_name}: {error_msg}")
+        
+        # Don't fail - let the code_generator see the error and recover
+        metrics["errors_recovered"] = metrics.get("errors_recovered", 0) + 1
+        state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # Update sub-LM call count from execution results
+    if tool_name == "execute_rlm_iteration" and isinstance(tool_result, dict):
+        llm_calls = tool_result.get("llm_calls", 0)
+        if llm_calls > 0:
+            metrics = state.get(STATE_KEY_RLM_METRICS, {})
+            metrics["total_sub_lm_calls"] = metrics.get("total_sub_lm_calls", 0) + llm_calls
+            state[STATE_KEY_RLM_METRICS] = metrics
+    
+    return tool_result
+
+
+# =============================================================================
+# Error Handling Callback
+# =============================================================================
+
+def on_model_error_callback(
+    callback_context: "CallbackContext",
+    error: Exception,
+) -> Optional["LlmResponse"]:
+    """Handle model call errors gracefully.
+    
+    This callback:
+    1. Logs the error
+    2. Can provide a fallback response
+    3. Tracks error metrics
+    
+    Args:
+        callback_context: ADK callback context.
+        error: The exception that occurred.
+        
+    Returns:
+        None to re-raise, or LlmResponse as fallback.
+    """
+    state = callback_context.state
+    agent_name = callback_context.agent_name
+    
+    # Log error
+    error_str = str(error)
+    tb = traceback.format_exc()
+    print(f"[RLM] Model error in {agent_name}: {error_str}")
+    
+    # Track error
+    metrics = state.get(STATE_KEY_RLM_METRICS, {})
+    model_errors = metrics.get("model_errors", [])
+    model_errors.append({
+        "agent": agent_name,
+        "error": error_str,
+        "traceback": tb,
+    })
+    metrics["model_errors"] = model_errors
+    state[STATE_KEY_RLM_METRICS] = metrics
+    
+    # For now, re-raise the error
+    # In production, you might return a fallback LlmResponse
+    return None
+
+
+# =============================================================================
+# Callback Bundles
+# =============================================================================
+
+def get_rlm_loop_callbacks() -> dict:
+    """Get callback bundle for the RLM iteration loop.
+    
+    Returns:
+        Dict of callbacks to pass to LoopAgent.
+    """
+    return {
+        "before_agent_callback": before_rlm_loop_callback,
+        "after_agent_callback": after_rlm_loop_callback,
+    }
+
+
+def get_code_generator_callbacks() -> dict:
+    """Get callback bundle for the code generator agent.
+    
+    Returns:
+        Dict of callbacks to pass to LlmAgent.
+    """
+    return {
+        "before_agent_callback": before_code_generator_callback,
+        "before_model_callback": before_model_with_history_injection,
+        "after_model_callback": after_model_extract_code_metadata,
+        "on_model_error_callback": on_model_error_callback,
+    }
+
+
+def get_code_executor_callbacks() -> dict:
+    """Get callback bundle for the code executor agent.
+    
+    Returns:
+        Dict of callbacks to pass to LlmAgent.
+    """
+    return {
+        "before_tool_callback": before_tool_callback,
+        "after_tool_callback": after_tool_callback,
+    }
+```
+
+---
+
+## Step 3: Custom Metadata Schemas
+
+**File:** `rlm_adk/metadata.py`
+
+Defines structured metadata types for REPL↔sub-agent communication.
+
+```python
+"""Custom metadata schemas for RLM-ADK integration.
+
+These dataclasses define the structured metadata passed between:
+- REPL orchestration layer
+- Code generator agent
+- Code executor agent
+- Sub-LM calls
+
+Using typed metadata enables:
+1. Consistent data exchange formats
+2. Easier debugging and logging
+3. Metrics aggregation
+4. Error tracking
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class RLMIterationMetadata:
+    """Metadata for a single RLM iteration.
+    
+    Attached to LlmResponse.custom_metadata by after_model callbacks.
+    """
+    iteration_number: int
+    code_block_count: int = 0
+    has_llm_query: bool = False
+    has_llm_query_batched: bool = False
+    has_final_answer: bool = False
+    final_answer_type: str | None = None  # "FINAL", "FINAL_VAR", or None
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "iteration_number": self.iteration_number,
+            "code_block_count": self.code_block_count,
+            "has_llm_query": self.has_llm_query,
+            "has_llm_query_batched": self.has_llm_query_batched,
+            "has_final_answer": self.has_final_answer,
+            "final_answer_type": self.final_answer_type,
+        }
+
+
+@dataclass
+class RLMExecutionMetadata:
+    """Metadata for code execution results.
+    
+    Attached to tool results by after_tool callbacks.
+    """
+    iteration_number: int
+    blocks_executed: int = 0
+    llm_calls_made: int = 0
+    execution_time_ms: float = 0.0
+    status: str = "success"  # "success", "error", "no_code"
+    error_type: str | None = None
+    variables_created: list[str] = field(default_factory=list)
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "iteration_number": self.iteration_number,
+            "blocks_executed": self.blocks_executed,
+            "llm_calls_made": self.llm_calls_made,
+            "execution_time_ms": self.execution_time_ms,
+            "status": self.status,
+            "error_type": self.error_type,
+            "variables_created": self.variables_created,
+        }
+
+
+@dataclass
+class RLMSubLMCallMetadata:
+    """Metadata for individual sub-LM calls made via llm_query().
+    
+    Tracked by the llm_bridge to provide visibility into recursive calls.
+    """
+    call_index: int
+    prompt_length: int
+    response_length: int
+    latency_ms: float
+    is_batched: bool = False
+    batch_size: int = 1
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "call_index": self.call_index,
+            "prompt_length": self.prompt_length,
+            "response_length": self.response_length,
+            "latency_ms": self.latency_ms,
+            "is_batched": self.is_batched,
+            "batch_size": self.batch_size,
+        }
+
+
+@dataclass
+class RLMSessionMetrics:
+    """Aggregated metrics for an entire RLM session.
+    
+    Built from individual iteration/execution metadata.
+    """
+    session_id: str
+    total_iterations: int = 0
+    total_code_blocks: int = 0
+    total_llm_query_calls: int = 0
+    total_llm_query_batched_calls: int = 0
+    total_sub_lm_calls: int = 0
+    total_execution_time_seconds: float = 0.0
+    total_model_latency_ms: float = 0.0
+    errors_encountered: int = 0
+    errors_recovered: int = 0
+    final_answer_found: bool = False
+    termination_reason: str = ""  # "FINAL", "max_iterations", "error"
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "total_iterations": self.total_iterations,
+            "total_code_blocks": self.total_code_blocks,
+            "total_llm_query_calls": self.total_llm_query_calls,
+            "total_llm_query_batched_calls": self.total_llm_query_batched_calls,
+            "total_sub_lm_calls": self.total_sub_lm_calls,
+            "total_execution_time_seconds": self.total_execution_time_seconds,
+            "total_model_latency_ms": self.total_model_latency_ms,
+            "errors_encountered": self.errors_encountered,
+            "errors_recovered": self.errors_recovered,
+            "final_answer_found": self.final_answer_found,
+            "termination_reason": self.termination_reason,
+        }
+
+
+@dataclass  
+class RLMContextMetadata:
+    """Metadata describing the loaded context.
+    
+    Attached when context is loaded to help code generator understand the data.
+    """
+    context_type: str  # "dict", "list", "str", etc.
+    total_size_chars: int
+    chunk_count: int = 0
+    chunk_sizes: list[int] = field(default_factory=list)
+    data_sources: list[str] = field(default_factory=list)  # e.g., ["hospital_chain_alpha", "masterdata"]
+    schema_hint: dict[str, Any] | None = None  # Optional schema information
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "context_type": self.context_type,
+            "total_size_chars": self.total_size_chars,
+            "chunk_count": self.chunk_count,
+            "chunk_sizes": self.chunk_sizes,
+            "data_sources": self.data_sources,
+            "schema_hint": self.schema_hint,
+        }
+    
+    def format_for_prompt(self) -> str:
+        """Format metadata as a string for inclusion in prompts."""
+        parts = [
+            f"Context type: {self.context_type}",
+            f"Total size: {self.total_size_chars:,} characters",
+        ]
+        
+        if self.chunk_count > 0:
+            parts.append(f"Chunks: {self.chunk_count}")
+            if len(self.chunk_sizes) <= 10:
+                parts.append(f"Chunk sizes: {self.chunk_sizes}")
+            else:
+                parts.append(f"Chunk sizes: {self.chunk_sizes[:5]} ... [{len(self.chunk_sizes) - 5} more]")
+        
+        if self.data_sources:
+            parts.append(f"Data sources: {', '.join(self.data_sources)}")
+        
+        return "\n".join(parts)
+```
+
+---
+
+## Step 4: RLM State Manager
 
 **File:** `rlm_adk/rlm_state.py`
 
@@ -132,6 +1006,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+from rlm_adk.metadata import RLMContextMetadata, RLMIterationMetadata
 
 
 @dataclass
@@ -145,6 +1021,7 @@ class RLMIteration:
     stderr: str
     error: str | None = None
     llm_calls_made: int = 0
+    metadata: RLMIterationMetadata | None = None
 
     def format_for_prompt(self) -> str:
         """Format this iteration for inclusion in LLM prompt."""
@@ -174,6 +1051,7 @@ class RLMSessionState:
 
     session_id: str
     context_description: str = ""
+    context_metadata: RLMContextMetadata | None = None
     iterations: list[RLMIteration] = field(default_factory=list)
     final_answer: str | None = None
     final_var_name: str | None = None
@@ -194,6 +1072,7 @@ class RLMSessionState:
         self,
         generated_code: str,
         execution_result: dict[str, Any],
+        metadata: RLMIterationMetadata | None = None,
     ) -> RLMIteration:
         """Add a new iteration record."""
         iteration = RLMIteration(
@@ -204,6 +1083,7 @@ class RLMSessionState:
             stderr=execution_result.get("stderr", ""),
             error=execution_result.get("error_message"),
             llm_calls_made=execution_result.get("llm_calls", 0),
+            metadata=metadata,
         )
         self.iterations.append(iteration)
         self.total_llm_calls += iteration.llm_calls_made
@@ -214,6 +1094,7 @@ class RLMSessionState:
         return {
             "session_id": self.session_id,
             "context_description": self.context_description,
+            "context_metadata": self.context_metadata.to_dict() if self.context_metadata else None,
             "iteration_count": self.iteration_count,
             "iteration_history": self.iteration_history,
             "final_answer": self.final_answer,
@@ -236,11 +1117,9 @@ def get_or_create_rlm_state(
 
 ---
 
-## Step 2: LLM Query Bridge (CRITICAL FIX)
+## Step 5: LLM Query Bridge (with Metadata Tracking)
 
 **File:** `rlm_adk/llm_bridge.py`
-
-This replaces the broken placeholder pattern with real LLM calls.
 
 ```python
 """Bridge between RLM's llm_query and ADK's LLM infrastructure.
@@ -248,21 +1127,44 @@ This replaces the broken placeholder pattern with real LLM calls.
 CRITICAL: This module implements REAL llm_query calls, not placeholders.
 The llm_query function must return actual LLM responses for the RLM
 paradigm to work correctly.
+
+Enhanced with metadata tracking for observability.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from typing import TYPE_CHECKING, Callable
+import time
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from google.adk.agents.invocation_context import InvocationContext
 
+from rlm_adk.metadata import RLMSubLMCallMetadata
+
+
+# Global call counter for metadata tracking
+_call_counter = 0
+_call_metadata: list[dict[str, Any]] = []
+
+
+def get_sub_lm_call_metadata() -> list[dict[str, Any]]:
+    """Get metadata from all sub-LM calls in this session."""
+    return _call_metadata.copy()
+
+
+def reset_sub_lm_call_metadata() -> None:
+    """Reset the call metadata (call at session start)."""
+    global _call_counter, _call_metadata
+    _call_counter = 0
+    _call_metadata = []
+
 
 def create_llm_query_bridge(
-    invocation_context: InvocationContext | None = None,
-    model: str = "gemini-2.0-flash",
+    invocation_context: "InvocationContext | None" = None,
+    model: str = "gemini-3-pro",
+    track_metadata: bool = True,
 ) -> Callable[[str], str]:
     """Create an llm_query function that makes real LLM calls.
 
@@ -272,110 +1174,148 @@ def create_llm_query_bridge(
     Args:
         invocation_context: ADK invocation context for LLM access.
         model: Model to use for sub-LM calls.
+        track_metadata: Whether to track call metadata.
 
     Returns:
         A synchronous llm_query(prompt) -> str function.
     """
+    global _call_counter, _call_metadata
 
     def llm_query_with_context(prompt: str) -> str:
         """Make a sub-LM call using ADK's invocation context."""
+        global _call_counter, _call_metadata
+        
+        start_time = time.time()
+        _call_counter += 1
+        call_index = _call_counter
+        
         if invocation_context is None:
-            return _llm_query_fallback(prompt, model)
+            response = _llm_query_fallback(prompt, model)
+        else:
+            try:
+                # Use ADK's LLM client from the invocation context
+                llm_client = invocation_context.llm
 
-        try:
-            # Use ADK's LLM client from the invocation context
-            # This ensures sub-LM calls use the same model configuration
-            llm_client = invocation_context.llm
+                async def _async_query():
+                    response = await llm_client.generate_content_async(prompt)
+                    return response.text
 
-            # ADK's LLM client is async, so we need to run it synchronously
-            async def _async_query():
-                response = await llm_client.generate_content_async(prompt)
-                return response.text
+                # Run async call synchronously
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, _async_query())
+                        response = future.result(timeout=60)
+                else:
+                    response = loop.run_until_complete(_async_query())
 
-            # Run async call synchronously
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, create a new thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, _async_query())
-                    return future.result(timeout=60)
-            else:
-                return loop.run_until_complete(_async_query())
-
-        except Exception as e:
-            # Log error but try fallback
-            print(f"[llm_query] ADK call failed: {e}, trying fallback")
-            return _llm_query_fallback(prompt, model)
+            except Exception as e:
+                print(f"[llm_query] ADK call failed: {e}, trying fallback")
+                response = _llm_query_fallback(prompt, model)
+        
+        # Track metadata
+        if track_metadata:
+            latency_ms = (time.time() - start_time) * 1000
+            metadata = RLMSubLMCallMetadata(
+                call_index=call_index,
+                prompt_length=len(prompt),
+                response_length=len(response),
+                latency_ms=round(latency_ms, 1),
+                is_batched=False,
+                batch_size=1,
+            )
+            _call_metadata.append(metadata.to_dict())
+        
+        return response
 
     return llm_query_with_context
 
 
 def create_llm_query_batched_bridge(
-    invocation_context: InvocationContext | None = None,
-    model: str = "gemini-2.0-flash",
+    invocation_context: "InvocationContext | None" = None,
+    model: str = "gemini-3-pro",
+    track_metadata: bool = True,
 ) -> Callable[[list[str]], list[str]]:
     """Create an llm_query_batched function for concurrent sub-LM calls.
 
     Args:
         invocation_context: ADK invocation context for LLM access.
         model: Model to use for sub-LM calls.
+        track_metadata: Whether to track call metadata.
 
     Returns:
         A function llm_query_batched(prompts) -> list[str].
     """
-    single_query = create_llm_query_bridge(invocation_context, model)
+    global _call_counter, _call_metadata
+    single_query = create_llm_query_bridge(invocation_context, model, track_metadata=False)
 
     def llm_query_batched(prompts: list[str]) -> list[str]:
         """Execute multiple LLM queries concurrently."""
+        global _call_counter, _call_metadata
+        
         if not prompts:
             return []
 
+        start_time = time.time()
+        _call_counter += 1
+        call_index = _call_counter
+        batch_size = len(prompts)
+
         if invocation_context is None:
-            # Fallback: sequential execution
-            return [single_query(p) for p in prompts]
+            results = [single_query(p) for p in prompts]
+        else:
+            try:
+                llm_client = invocation_context.llm
 
-        try:
-            llm_client = invocation_context.llm
+                async def _async_batch():
+                    tasks = [
+                        llm_client.generate_content_async(prompt)
+                        for prompt in prompts
+                    ]
+                    responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-            async def _async_batch():
-                tasks = [
-                    llm_client.generate_content_async(prompt)
-                    for prompt in prompts
-                ]
-                responses = await asyncio.gather(*tasks, return_exceptions=True)
+                    results = []
+                    for i, resp in enumerate(responses):
+                        if isinstance(resp, Exception):
+                            results.append(f"[Error in query {i}: {resp}]")
+                        else:
+                            results.append(resp.text)
+                    return results
 
-                results = []
-                for i, resp in enumerate(responses):
-                    if isinstance(resp, Exception):
-                        results.append(f"[Error in query {i}: {resp}]")
-                    else:
-                        results.append(resp.text)
-                return results
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, _async_batch())
+                        results = future.result(timeout=120)
+                else:
+                    results = loop.run_until_complete(_async_batch())
 
-            # Run async batch synchronously
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, _async_batch())
-                    return future.result(timeout=120)
-            else:
-                return loop.run_until_complete(_async_batch())
+            except Exception as e:
+                print(f"[llm_query_batched] Batch call failed: {e}, falling back to sequential")
+                results = [single_query(p) for p in prompts]
 
-        except Exception as e:
-            print(f"[llm_query_batched] Batch call failed: {e}, falling back to sequential")
-            return [single_query(p) for p in prompts]
+        # Track metadata
+        if track_metadata:
+            latency_ms = (time.time() - start_time) * 1000
+            metadata = RLMSubLMCallMetadata(
+                call_index=call_index,
+                prompt_length=sum(len(p) for p in prompts),
+                response_length=sum(len(r) for r in results),
+                latency_ms=round(latency_ms, 1),
+                is_batched=True,
+                batch_size=batch_size,
+            )
+            _call_metadata.append(metadata.to_dict())
+
+        return results
 
     return llm_query_batched
 
 
 def _llm_query_fallback(prompt: str, model: str) -> str:
-    """Fallback llm_query using direct Gemini API or simulation.
-
-    Used when ADK invocation context is not available.
-    """
-    # Try Google Gemini API directly
+    """Fallback llm_query using direct Gemini API or simulation."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if api_key:
         try:
@@ -387,15 +1327,13 @@ def _llm_query_fallback(prompt: str, model: str) -> str:
         except Exception as e:
             print(f"[llm_query_fallback] Gemini API failed: {e}")
 
-    # Final fallback: simulation for development
     return _simulate_llm_response(prompt)
 
 
 def _simulate_llm_response(prompt: str) -> str:
     """Simulate LLM response for development/testing.
 
-    WARNING: This should only be used in development. Production
-    deployments must have a real LLM connection.
+    WARNING: This should only be used in development.
     """
     prompt_lower = prompt.lower()
 
@@ -416,7 +1354,7 @@ def _simulate_llm_response(prompt: str) -> str:
 
 ---
 
-## Step 3: Code Generator Agent
+## Step 6: Code Generator Agent (with Callbacks)
 
 **File:** `rlm_adk/agents/code_generator.py`
 
@@ -424,7 +1362,8 @@ def _simulate_llm_response(prompt: str) -> str:
 """Code generator agent for RLM iteration loop.
 
 This agent generates Python code that uses llm_query() for recursive
-decomposition of problems.
+decomposition of problems. Uses the composed system prompt from
+rlm/utils/prompts.py with healthcare extensions.
 """
 
 from __future__ import annotations
@@ -434,64 +1373,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from google.adk.agents import LlmAgent
 
-
-RLM_CODE_GENERATOR_INSTRUCTION = '''You are the code generation component of an RLM (Recursive Language Model) system.
-
-## Your Role
-Generate Python code that programmatically decomposes problems using recursive sub-LM calls.
-
-## Available Functions in REPL
-
-1. **`context`** - Variable containing the offloaded data to analyze
-   - Access like: `context['vendors']`, `len(context)`, etc.
-
-2. **`llm_query(prompt: str) -> str`** - Spawn a sub-LM call for reasoning
-   - Use for: analyzing data chunks, answering questions, making decisions
-   - Example: `summary = llm_query(f"Summarize: {data[:1000]}")`
-
-3. **`llm_query_batched(prompts: list[str]) -> list[str]`** - Concurrent sub-LM calls
-   - Use for: parallel analysis of independent chunks
-   - Example: `results = llm_query_batched([f"Analyze chunk {i}: {c}" for i, c in enumerate(chunks)])`
-
-## Context Information
-{context_description}
-
-## Previous Iterations
-{iteration_history}
-
-## User Query
-{user_query}
-
-## Instructions
-
-Based on the context and any previous execution results, write the NEXT code block.
-
-### If you have determined the final answer:
-```python
-FINAL("Your final answer here as a string")
-```
-
-Or if the answer is stored in a variable:
-```python
-result = compute_final_result()
-FINAL_VAR(result)
-```
-
-### If more analysis is needed:
-Write code that:
-1. Examines the context programmatically (don't just print it all)
-2. Uses `llm_query()` to analyze specific portions
-3. Uses `llm_query_batched()` for concurrent analysis of independent chunks
-4. Stores intermediate results in variables for the next iteration
-5. Builds progressively toward the final answer
-
-### Important Guidelines:
-- Always wrap code in ```python or ```repl blocks
-- Variables persist across iterations - use them to accumulate results
-- Don't re-analyze data you've already processed
-- If an error occurred, generate corrective code
-- Aim for the final answer within 3-5 iterations
-'''
+from rlm_adk.callbacks import get_code_generator_callbacks
+from rlm_adk.prompts import get_code_generator_instruction
 
 
 def make_code_generator() -> "LlmAgent":
@@ -502,18 +1385,29 @@ def make_code_generator() -> "LlmAgent":
     """
     from google.adk.agents import LlmAgent
 
+    # Get the composed instruction (RLM_SYSTEM_PROMPT + healthcare extension)
+    instruction = get_code_generator_instruction()
+    
+    # Get callback bundle for state/error management
+    callbacks = get_code_generator_callbacks()
+
     return LlmAgent(
         name="rlm_code_generator",
-        model="gemini-2.0-flash",
+        model="gemini-3-pro",
         description="Generates Python code for recursive problem decomposition using llm_query()",
-        instruction=RLM_CODE_GENERATOR_INSTRUCTION,
+        instruction=instruction,
         output_key="generated_code",
+        # Attach callbacks for state management
+        before_agent_callback=callbacks.get("before_agent_callback"),
+        before_model_callback=callbacks.get("before_model_callback"),
+        after_model_callback=callbacks.get("after_model_callback"),
+        on_model_error_callback=callbacks.get("on_model_error_callback"),
     )
 ```
 
 ---
 
-## Step 4: Code Executor Agent
+## Step 7: Code Executor Agent (with Callbacks)
 
 **File:** `rlm_adk/agents/code_executor.py`
 
@@ -534,6 +1428,9 @@ if TYPE_CHECKING:
     from google.adk.agents import LlmAgent
     from google.adk.tools.tool_context import ToolContext
 
+from rlm_adk.callbacks import get_code_executor_callbacks
+from rlm_adk.metadata import RLMExecutionMetadata
+
 
 @tool
 def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
@@ -543,17 +1440,26 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
     1. Extracts code blocks from {generated_code}
     2. Executes them in the RLM REPL with llm_query() access
     3. Updates iteration_history for the next iteration
-    4. Returns execution results
+    4. Returns execution results with custom_metadata
 
     Returns:
-        dict with status, stdout, stderr, error_message, llm_calls
+        dict with status, stdout, stderr, error_message, llm_calls, custom_metadata
     """
+    import time
+    
     from rlm_adk.llm_bridge import (
         create_llm_query_bridge,
         create_llm_query_batched_bridge,
+        reset_sub_lm_call_metadata,
+        get_sub_lm_call_metadata,
     )
     from rlm_adk.rlm_repl import find_code_blocks, get_or_create_repl_session
     from rlm_adk.rlm_state import get_or_create_rlm_state
+
+    start_time = time.time()
+    
+    # Reset sub-LM call tracking for this iteration
+    reset_sub_lm_call_metadata()
 
     # Get generated code from previous agent
     generated_code = tool_context.state.get("generated_code", "")
@@ -565,6 +1471,11 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
             "stdout": "",
             "stderr": "",
             "llm_calls": 0,
+            "custom_metadata": RLMExecutionMetadata(
+                iteration_number=0,
+                status="error",
+                error_type="missing_code",
+            ).to_dict(),
         }
 
     # Extract code blocks
@@ -578,14 +1489,17 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
             "stdout": "",
             "stderr": "",
             "llm_calls": 0,
+            "custom_metadata": RLMExecutionMetadata(
+                iteration_number=0,
+                status="no_code",
+            ).to_dict(),
         }
 
     # Get RLM state
     session_id = tool_context.state.get("rlm_session_id", "default")
     rlm_state = get_or_create_rlm_state(tool_context.state, session_id)
 
-    # Create REAL llm_query bridge (CRITICAL: not placeholders!)
-    # Try to get invocation context from tool_context if available
+    # Create REAL llm_query bridge
     invocation_ctx = getattr(tool_context, "invocation_context", None)
 
     llm_query_fn = create_llm_query_bridge(invocation_ctx)
@@ -605,6 +1519,7 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
     total_llm_calls = 0
     last_status = "success"
     error_message = None
+    variables_created = []
 
     for i, code in enumerate(code_blocks):
         result = repl.execute_code(code)
@@ -612,11 +1527,28 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
         all_stdout.append(result.get("stdout", ""))
         all_stderr.append(result.get("stderr", ""))
         total_llm_calls += result.get("llm_calls", 0)
+        
+        # Track new variables (if REPL supports it)
+        if "variables" in result:
+            variables_created.extend(result["variables"])
 
         if result.get("status") == "error":
             last_status = "error"
             error_message = f"Block {i+1}: {result.get('error_message', 'Unknown error')}"
-            # Don't break - continue to show all results
+
+    # Calculate execution time
+    execution_time_ms = (time.time() - start_time) * 1000
+
+    # Build execution metadata
+    exec_metadata = RLMExecutionMetadata(
+        iteration_number=rlm_state.iteration_count + 1,
+        blocks_executed=len(code_blocks),
+        llm_calls_made=total_llm_calls,
+        execution_time_ms=round(execution_time_ms, 1),
+        status=last_status,
+        error_type=error_message.split(":")[0] if error_message else None,
+        variables_created=variables_created,
+    )
 
     # Build execution result
     execution_result = {
@@ -627,19 +1559,26 @@ def execute_rlm_iteration(tool_context: "ToolContext") -> dict[str, Any]:
         "llm_calls": total_llm_calls,
         "blocks_executed": len(code_blocks),
         "iteration": rlm_state.iteration_count + 1,
+        "custom_metadata": exec_metadata.to_dict(),
+        "sub_lm_call_details": get_sub_lm_call_metadata(),
     }
 
     # Update iteration history (CRITICAL for feedback loop)
+    # Get iteration metadata from state if available
+    iteration_metadata = tool_context.state.get("_last_iteration_metadata")
+    
     rlm_state.add_iteration(
         generated_code=generated_code,
         execution_result=execution_result,
+        metadata=iteration_metadata,
     )
 
     # Store formatted history in state for next code_generator call
     tool_context.state["iteration_history"] = rlm_state.iteration_history
     tool_context.state["execution_result"] = execution_result
+    tool_context.state["_rlm_current_iteration"] = rlm_state.iteration_count
 
-    # Also sync REPL context back to state
+    # Sync REPL context back to state
     tool_context.state["rlm_context"] = repl.context
 
     return execution_result
@@ -653,9 +1592,11 @@ def make_code_executor() -> "LlmAgent":
     """
     from google.adk.agents import LlmAgent
 
+    callbacks = get_code_executor_callbacks()
+
     return LlmAgent(
         name="rlm_code_executor",
-        model="gemini-2.0-flash",
+        model="gemini-3-pro",
         description="Executes Python code in RLM REPL with llm_query() access",
         instruction="""You are the code execution component of the RLM system.
 
@@ -664,18 +1605,20 @@ Your ONLY task is to call the execute_rlm_iteration tool to run the generated co
 Call the tool immediately without any additional analysis. The tool will:
 1. Extract code blocks from the generated code
 2. Execute them in the REPL environment
-3. Return the execution results
+3. Return the execution results with detailed metadata
 
 After execution, briefly report the results (success/error, any output).
 """,
         tools=[execute_rlm_iteration],
         output_key="execution_result",
+        before_tool_callback=callbacks.get("before_tool_callback"),
+        after_tool_callback=callbacks.get("after_tool_callback"),
     )
 ```
 
 ---
 
-## Step 5: Completion Checker (BaseAgent)
+## Step 8: Completion Checker (BaseAgent)
 
 **File:** `rlm_adk/agents/completion_checker.py`
 
@@ -720,19 +1663,17 @@ class RLMCompletionChecker(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         """Check for completion and optionally escalate to exit loop."""
 
-        # Get state from session
         session_state = ctx.session.state
         generated_code = session_state.get("generated_code", "")
         execution_result = session_state.get("execution_result", {})
 
-        # Get RLM state
         session_id = session_state.get("rlm_session_id", "default")
         rlm_state = get_or_create_rlm_state(session_state, session_id)
 
         # Check for FINAL pattern in generated code
         final_answer = find_final_answer(generated_code)
 
-        # Also check stdout from execution (in case FINAL was printed)
+        # Also check stdout from execution
         if not final_answer:
             stdout = execution_result.get("stdout", "")
             final_answer = find_final_answer(stdout)
@@ -743,18 +1684,16 @@ class RLMCompletionChecker(BaseAgent):
             # Handle FINAL_VAR pattern
             if final_answer.startswith("__FINAL_VAR__:"):
                 var_name = final_answer.split(":", 1)[1]
-                # Retrieve from REPL - need to get the actual value
-                # For now, store the variable name; executor should have stored it
                 rlm_state.final_var_name = var_name
                 rlm_state.final_answer = f"[Result stored in variable: {var_name}]"
-                # TODO: Actually retrieve the variable value from REPL session
             else:
                 rlm_state.final_answer = final_answer
 
-            # Store final answer in session state for result_formatter
+            # Store final answer in session state
             session_state["rlm_final_answer"] = rlm_state.final_answer
             session_state["rlm_iteration_count"] = iteration
             session_state["rlm_total_llm_calls"] = rlm_state.total_llm_calls
+            session_state["rlm_termination_reason"] = "FINAL"
 
             # Signal loop termination via escalation
             yield Event(
@@ -763,159 +1702,18 @@ class RLMCompletionChecker(BaseAgent):
             )
 
         else:
-            # Check for error that might need reporting
             error = execution_result.get("error_message")
-
             if error:
-                # Continue loop - let code_generator see the error and fix it
-                yield Event(
-                    author=self.name,
-                    # No escalation - loop continues
-                )
+                # Continue loop - let code_generator see the error
+                yield Event(author=self.name)
             else:
-                # Normal iteration complete, continue loop
-                yield Event(
-                    author=self.name,
-                )
+                # Normal iteration complete
+                yield Event(author=self.name)
 ```
 
 ---
 
-## Step 6: Context Setup Agent
-
-**File:** `rlm_adk/agents/context_setup.py`
-
-```python
-"""Context setup agent for RLM workflow.
-
-Loads data into RLM context before the iteration loop begins.
-"""
-
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from google.adk.agents import LlmAgent
-
-from rlm_adk.tools.context_loader import (
-    load_custom_context,
-    load_query_results_to_context,
-    load_vendor_data_to_context,
-)
-
-
-def make_context_setup_agent() -> "LlmAgent":
-    """Create the context setup agent.
-
-    Returns:
-        LlmAgent that initializes RLM context with data.
-    """
-    from google.adk.agents import LlmAgent
-
-    return LlmAgent(
-        name="rlm_context_setup",
-        model="gemini-2.0-flash",
-        description="Initializes RLM context with data for analysis",
-        instruction="""You are the context setup component of the RLM system.
-
-Your job is to load the appropriate data into the RLM context based on the user's request.
-
-## Available Tools
-
-1. **load_vendor_data_to_context** - For hospital vendor resolution tasks
-   - Parameters: hospital_chains (list of chain names), include_masterdata (bool)
-   - Use when: User wants to analyze vendor data across hospital chains
-
-2. **load_custom_context** - For general data loading
-   - Parameters: data (any), description (str)
-   - Use when: Loading custom data not covered by specific loaders
-
-3. **load_query_results_to_context** - For SQL query results
-   - Parameters: sql_query (str), description (str)
-   - Use when: User provides a specific SQL query
-
-## Instructions
-
-1. Analyze the user's request to determine what data to load
-2. Call the appropriate loading tool(s)
-3. Confirm what data is now available in context
-4. Set the context_description for the code generator
-
-After loading, the data will be available as the `context` variable in the REPL.
-""",
-        tools=[
-            load_vendor_data_to_context,
-            load_custom_context,
-            load_query_results_to_context,
-        ],
-        output_key="context_setup_result",
-    )
-```
-
----
-
-## Step 7: Result Formatter Agent
-
-**File:** `rlm_adk/agents/result_formatter.py`
-
-```python
-"""Result formatter agent for RLM workflow.
-
-Formats the final RLM answer for user presentation.
-"""
-
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from google.adk.agents import LlmAgent
-
-
-def make_result_formatter() -> "LlmAgent":
-    """Create the result formatter agent.
-
-    Returns:
-        LlmAgent that formats RLM results for the user.
-    """
-    from google.adk.agents import LlmAgent
-
-    return LlmAgent(
-        name="rlm_result_formatter",
-        model="gemini-2.0-flash",
-        description="Formats the final RLM analysis result for presentation",
-        instruction="""You are the result formatter for the RLM system.
-
-The RLM iteration loop has completed. Format the results clearly for the user.
-
-## Final Answer
-{rlm_final_answer}
-
-## Analysis Metadata
-- Iterations completed: {rlm_iteration_count}
-- Total sub-LM calls: {rlm_total_llm_calls}
-
-## Execution Summary
-{execution_result}
-
-## Instructions
-
-1. Present the final answer prominently
-2. If the answer contains structured data (JSON, lists, tables), format appropriately
-3. Summarize the analysis process briefly
-4. Highlight any important findings or insights
-5. Note any caveats or limitations if applicable
-
-Keep the response clear and actionable for the user.
-""",
-        output_key="rlm_formatted_result",
-    )
-```
-
----
-
-## Step 8: RLM Loop Assembly
+## Step 9: RLM Loop Assembly (with Callbacks)
 
 **File:** `rlm_adk/agents/rlm_loop.py`
 
@@ -923,7 +1721,7 @@ Keep the response clear and actionable for the user.
 """RLM iteration loop using ADK LoopAgent.
 
 Assembles the code_generator, code_executor, and completion_checker
-into a LoopAgent workflow.
+into a LoopAgent workflow with callbacks for state management.
 """
 
 from __future__ import annotations
@@ -938,25 +1736,21 @@ from rlm_adk.agents.code_generator import make_code_generator
 from rlm_adk.agents.completion_checker import RLMCompletionChecker
 from rlm_adk.agents.context_setup import make_context_setup_agent
 from rlm_adk.agents.result_formatter import make_result_formatter
+from rlm_adk.callbacks import get_rlm_loop_callbacks
 
 
 def make_rlm_iteration_loop(max_iterations: int = 10) -> "LoopAgent":
-    """Create the RLM iteration loop.
-
-    This implements the core RLM pattern:
-    1. Generate code with llm_query() calls
-    2. Execute code in REPL (with real LLM calls)
-    3. Check for FINAL answer (escalate to exit if found)
-    4. Repeat until FINAL or max_iterations
+    """Create the RLM iteration loop with callbacks.
 
     Args:
         max_iterations: Maximum iterations before forced termination.
-            Default 10 provides safety while allowing complex analysis.
 
     Returns:
         LoopAgent configured for RLM iteration.
     """
     from google.adk.agents import LoopAgent
+
+    callbacks = get_rlm_loop_callbacks()
 
     return LoopAgent(
         name="rlm_iteration_loop",
@@ -967,36 +1761,24 @@ def make_rlm_iteration_loop(max_iterations: int = 10) -> "LoopAgent":
         2. code_executor: Executes code in persistent REPL, updates iteration_history
         3. completion_checker: Detects FINAL/FINAL_VAR and escalates to exit
 
-        The loop continues until:
-        - FINAL answer is detected (escalation)
-        - max_iterations is reached (safety limit)
-
-        State flows between iterations via:
-        - iteration_history: Formatted record of all previous code + results
-        - rlm_context: Persistent data in REPL
-        - execution_result: Most recent execution output
+        Callbacks handle:
+        - State initialization and cleanup
+        - Metrics tracking
+        - Error recovery
         """,
         max_iterations=max_iterations,
         sub_agents=[
-            make_code_generator(),      # Step 1: Generate code
-            make_code_executor(),       # Step 2: Execute with llm_query
-            RLMCompletionChecker(),     # Step 3: Check FINAL, maybe escalate
+            make_code_generator(),
+            make_code_executor(),
+            RLMCompletionChecker(),
         ],
+        before_agent_callback=callbacks.get("before_agent_callback"),
+        after_agent_callback=callbacks.get("after_agent_callback"),
     )
 
 
 def make_rlm_completion_workflow(max_iterations: int = 10) -> "SequentialAgent":
     """Create the full RLM completion workflow.
-
-    Structure:
-    SequentialAgent:
-      1. context_setup: Load data into RLM context
-      2. LoopAgent: Iterative code generation/execution
-      3. result_formatter: Format final answer for user
-
-    Note: If the LoopAgent escalates (FINAL detected), subsequent agents
-    in the SequentialAgent may not run. This is a known ADK behavior.
-    The result_formatter handles this gracefully by checking state.
 
     Args:
         max_iterations: Maximum iterations for the loop.
@@ -1015,11 +1797,9 @@ def make_rlm_completion_workflow(max_iterations: int = 10) -> "SequentialAgent":
         2. Iteratively generates and executes code with llm_query()
         3. Continues until FINAL answer is produced
         4. Formats results for user presentation
-
-        Delegate to this workflow for complex analysis requiring:
-        - Processing data too large for single-pass analysis
-        - Recursive decomposition of problems
-        - Iterative refinement of answers
+        
+        Uses composed system prompt from rlm/utils/prompts.py
+        with healthcare vendor management extensions.
         """,
         sub_agents=[
             make_context_setup_agent(),
@@ -1031,9 +1811,9 @@ def make_rlm_completion_workflow(max_iterations: int = 10) -> "SequentialAgent":
 
 ---
 
-## Step 9: Updated Root Agent
+## Step 10: Updated Root Agent
 
-**File:** `rlm_adk/agent.py` (additions to existing file)
+**File:** `rlm_adk/agent.py` (key changes)
 
 ```python
 """Root agent with RLM workflow integration."""
@@ -1043,8 +1823,14 @@ from rlm_adk.agents.rlm_loop import (
     make_rlm_completion_workflow,
     make_rlm_iteration_loop,
 )
+from rlm_adk.callbacks import (
+    before_model_callback,
+    after_model_callback,
+    on_model_error_callback,
+)
+from rlm_adk.prompts import ROOT_AGENT_INSTRUCTION
 
-# In the _get_agents() function, add:
+# In the _get_agents() function:
 
 def _get_agents():
     """Create all agents with proper ADK integration."""
@@ -1055,15 +1841,15 @@ def _get_agents():
     # RLM completion workflow (nested LoopAgent)
     rlm_workflow = make_rlm_completion_workflow(max_iterations=10)
 
-    # Direct access to just the iteration loop (for advanced users)
+    # Direct access to just the iteration loop
     rlm_loop = make_rlm_iteration_loop(max_iterations=10)
 
-    # Updated root agent with RLM workflow
+    # Updated root agent with RLM workflow and callbacks
     root_agent = LlmAgent(
         name="rlm_data_scientist",
-        model="gemini-2.0-flash",
+        model="gemini-3-pro",
         description="Healthcare data scientist with full RLM recursive decomposition capabilities",
-        instruction=RLM_ROOT_AGENT_INSTRUCTION,  # Defined below
+        instruction=ROOT_AGENT_INSTRUCTION,  # From rlm_adk/prompts.py
         tools=[
             # Direct RLM tools for simple cases
             rlm_execute_code,
@@ -1071,18 +1857,7 @@ def _get_agents():
             rlm_query_context,
             rlm_get_session_state,
             rlm_clear_session,
-            # Databricks tools
-            execute_python_code,
-            execute_sql_query,
-            # Unity Catalog tools
-            list_catalogs,
-            list_schemas,
-            list_tables,
-            read_table_sample,
-            # Vendor resolution tools
-            find_similar_vendors,
-            match_vendor_to_masterdata,
-            create_vendor_mapping,
+            # ... other tools ...
         ],
         sub_agents=[
             rlm_workflow,                # Full RLM workflow (recommended)
@@ -1092,302 +1867,17 @@ def _get_agents():
             vendor_matcher_agent,        # Direct vendor matching
             view_generator_agent,        # Direct view generation
         ],
+        # Root agent callbacks for metrics
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        on_model_error_callback=on_model_error_callback,
     )
 
     return {
         "root": root_agent,
         "rlm_workflow": rlm_workflow,
         "rlm_loop": rlm_loop,
-        # ... other agents ...
     }
-
-
-RLM_ROOT_AGENT_INSTRUCTION = '''You are an expert data scientist specializing in healthcare vendor management with RLM (Recursive Language Model) capabilities.
-
-## Available Workflows
-
-### 1. Full RLM Workflow (RECOMMENDED for Complex Analysis)
-**Delegate to:** `rlm_completion_workflow`
-
-Use this for:
-- Large-scale vendor resolution across multiple hospital chains
-- Complex data analysis requiring iterative refinement
-- Problems that benefit from recursive decomposition
-- When the data is too large to analyze in a single pass
-
-The workflow automatically:
-1. Loads context from Unity Catalog
-2. Iteratively generates and executes code with llm_query()
-3. Continues until a FINAL answer is produced
-4. Formats results for presentation
-
-### 2. Direct RLM Tools (For Simple Cases)
-Use these tools directly for simpler tasks:
-
-- **rlm_load_context**: Load data into REPL context
-- **rlm_execute_code**: Execute a single code block with llm_query() access
-- **rlm_query_context**: Apply pre-built decomposition strategies
-
-### 3. Pipeline Delegation
-**Delegate to:** `vendor_resolution_pipeline`
-
-Use for standard vendor resolution workflow:
-1. Parallel ERP analysis across hospital chains
-2. Vendor matching to masterdata
-3. View generation
-
-## When to Use RLM
-
-Use the RLM workflow when:
-- Data size exceeds what can be processed in one LLM call
-- The problem requires breaking down into sub-problems
-- You need to iteratively refine analysis based on intermediate results
-- Concurrent analysis of independent data chunks would be beneficial
-
-## Example RLM Usage
-
-For a request like "Find all duplicate vendors across our hospital chains":
-
-1. Delegate to `rlm_completion_workflow`
-2. The workflow will:
-   - Load vendor data from each chain into context
-   - Generate code that chunks the data and uses llm_query_batched() for parallel analysis
-   - Aggregate results using llm_query()
-   - Continue until all duplicates are identified
-   - Return formatted results
-
-## Important Notes
-
-- The RLM system uses REAL LLM calls for llm_query() - not simulations
-- Variables persist across iterations in the REPL
-- Use llm_query_batched() for concurrent processing of independent chunks
-- The system will automatically terminate when FINAL() is called or max iterations reached
-'''
-```
-
----
-
-## Step 10: Tests
-
-**File:** `tests/rlm_adk/test_rlm_loop.py`
-
-```python
-"""Tests for RLM LoopAgent workflow."""
-
-import pytest
-
-from rlm_adk.rlm_repl import find_code_blocks, find_final_answer
-from rlm_adk.rlm_state import RLMIteration, RLMSessionState, get_or_create_rlm_state
-
-
-class TestRLMState:
-    """Tests for RLM state management."""
-
-    def test_iteration_tracking(self):
-        """Test iteration state tracking."""
-        state = RLMSessionState(session_id="test")
-
-        state.add_iteration(
-            generated_code="x = 1",
-            execution_result={"status": "success", "stdout": "1", "llm_calls": 0},
-        )
-
-        assert state.iteration_count == 1
-        assert "x = 1" in state.iteration_history
-
-    def test_iteration_history_formatting(self):
-        """Test iteration history is formatted for prompts."""
-        state = RLMSessionState(session_id="test")
-
-        state.add_iteration(
-            generated_code="result = llm_query('analyze')",
-            execution_result={
-                "status": "success",
-                "stdout": "Analysis complete",
-                "llm_calls": 1,
-            },
-        )
-
-        history = state.iteration_history
-        assert "Iteration 1" in history
-        assert "llm_query" in history
-        assert "Analysis complete" in history
-        assert "1 sub-LM calls" in history
-
-    def test_final_answer_storage(self):
-        """Test final answer is stored correctly."""
-        state = RLMSessionState(session_id="test")
-        state.final_answer = "42 duplicates found"
-
-        assert state.final_answer == "42 duplicates found"
-
-    def test_get_or_create_state(self):
-        """Test state retrieval from session."""
-        session_state = {}
-
-        state1 = get_or_create_rlm_state(session_state, "test_session")
-        state2 = get_or_create_rlm_state(session_state, "test_session")
-
-        assert state1 is state2  # Same instance
-
-
-class TestCodeBlockParsing:
-    """Tests for code block extraction."""
-
-    def test_extract_python_block(self):
-        """Test Python code block extraction."""
-        response = '''
-Here's the analysis:
-
-```python
-chunks = [context[i:i+10] for i in range(0, len(context), 10)]
-results = llm_query_batched([f"Analyze: {c}" for c in chunks])
-```
-
-This will analyze the data.
-'''
-        blocks = find_code_blocks(response)
-        assert len(blocks) == 1
-        assert "llm_query_batched" in blocks[0]
-
-    def test_extract_repl_block(self):
-        """Test REPL code block extraction."""
-        response = '''
-```repl
-FINAL("42 duplicates found")
-```
-'''
-        blocks = find_code_blocks(response)
-        assert len(blocks) == 1
-        assert "FINAL" in blocks[0]
-
-
-class TestFinalPatternDetection:
-    """Tests for FINAL/FINAL_VAR detection."""
-
-    def test_detect_final_string(self):
-        """Test FINAL with string argument."""
-        code = 'analysis_done = True\nFINAL("Found 42 duplicates across 3 chains")'
-        answer = find_final_answer(code)
-        assert answer == "Found 42 duplicates across 3 chains"
-
-    def test_detect_final_var(self):
-        """Test FINAL_VAR pattern."""
-        code = '''
-result = aggregate_findings(all_results)
-FINAL_VAR(result)
-'''
-        answer = find_final_answer(code)
-        assert answer == "__FINAL_VAR__:result"
-
-    def test_no_final_returns_none(self):
-        """Test that missing FINAL returns None."""
-        code = 'x = llm_query("still processing")'
-        answer = find_final_answer(code)
-        assert answer is None
-
-
-class TestLLMBridge:
-    """Tests for LLM query bridge."""
-
-    def test_fallback_simulation(self):
-        """Test fallback to simulation when no API available."""
-        from rlm_adk.llm_bridge import _simulate_llm_response
-
-        response = _simulate_llm_response("Find duplicates in this data")
-        assert "duplicate" in response.lower()
-
-    def test_bridge_creation_without_context(self):
-        """Test bridge works without invocation context."""
-        from rlm_adk.llm_bridge import create_llm_query_bridge
-
-        llm_query = create_llm_query_bridge(invocation_context=None)
-        result = llm_query("Summarize this data")
-
-        # Should return something (simulation or real)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-
-class TestRLMIteration:
-    """Tests for RLM iteration record."""
-
-    def test_format_for_prompt(self):
-        """Test iteration formatting for prompt inclusion."""
-        iteration = RLMIteration(
-            iteration_number=1,
-            generated_code="x = llm_query('analyze')",
-            execution_result={"status": "success"},
-            stdout="Result: 42",
-            stderr="",
-            llm_calls_made=1,
-        )
-
-        formatted = iteration.format_for_prompt()
-
-        assert "Iteration 1" in formatted
-        assert "llm_query" in formatted
-        assert "Result: 42" in formatted
-        assert "1 sub-LM calls" in formatted
-
-    def test_format_with_error(self):
-        """Test formatting includes errors."""
-        iteration = RLMIteration(
-            iteration_number=2,
-            generated_code="bad_code()",
-            execution_result={"status": "error"},
-            stdout="",
-            stderr="",
-            error="NameError: bad_code is not defined",
-            llm_calls_made=0,
-        )
-
-        formatted = iteration.format_for_prompt()
-
-        assert "Error:" in formatted
-        assert "NameError" in formatted
-```
-
----
-
-## State Flow Diagram
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                        ADK Session State                            │
-├────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  rlm_session_id: "default"                                         │
-│  rlm_context: { ... loaded data ... }                              │
-│  context_description: "Vendor data from 3 hospital chains"         │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  iteration_history (updated each iteration):                 │   │
-│  │                                                              │   │
-│  │  === Iteration 1 ===                                        │   │
-│  │  Code: chunks = [context[i:i+100] for i in ...]             │   │
-│  │  Output: Split into 5 chunks                                │   │
-│  │  (Made 0 sub-LM calls)                                      │   │
-│  │                                                              │   │
-│  │  === Iteration 2 ===                                        │   │
-│  │  Code: results = llm_query_batched([...])                   │   │
-│  │  Output: Analyzed 5 chunks                                  │   │
-│  │  (Made 5 sub-LM calls)                                      │   │
-│  │                                                              │   │
-│  │  === Iteration 3 ===                                        │   │
-│  │  Code: final = llm_query(f"Aggregate: {results}")           │   │
-│  │        FINAL(final)                                         │   │
-│  │  Output: Found 42 duplicates                                │   │
-│  │  (Made 1 sub-LM call)                                       │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  generated_code: "..." (latest from code_generator)                │
-│  execution_result: { status, stdout, llm_calls, ... }              │
-│  rlm_final_answer: "Found 42 duplicate vendors across chains"      │
-│  rlm_iteration_count: 3                                            │
-│  rlm_total_llm_calls: 6                                            │
-│                                                                     │
-└────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1395,51 +1885,61 @@ class TestRLMIteration:
 ## Implementation Checklist
 
 ### Phase 1: Core Infrastructure
-- [ ] Create `rlm_adk/rlm_state.py` - State management
-- [ ] Create `rlm_adk/llm_bridge.py` - Real llm_query implementation
-- [ ] Update `rlm_adk/rlm_repl.py` - Ensure find_code_blocks/find_final_answer work
+- [ ] Create `rlm_adk/prompts.py` - System prompt composition
+- [ ] Create `rlm_adk/callbacks.py` - ADK callback implementations
+- [ ] Create `rlm_adk/metadata.py` - custom_metadata schemas
+- [ ] Create `rlm_adk/rlm_state.py` - State management (with metadata support)
+- [ ] Create `rlm_adk/llm_bridge.py` - Real llm_query with metadata tracking
 
 ### Phase 2: Agent Components
-- [ ] Create `rlm_adk/agents/code_generator.py`
-- [ ] Create `rlm_adk/agents/code_executor.py`
+- [ ] Create `rlm_adk/agents/code_generator.py` (with callbacks)
+- [ ] Create `rlm_adk/agents/code_executor.py` (with callbacks)
 - [ ] Create `rlm_adk/agents/completion_checker.py`
 - [ ] Create `rlm_adk/agents/context_setup.py`
 - [ ] Create `rlm_adk/agents/result_formatter.py`
 
 ### Phase 3: Workflow Assembly
-- [ ] Create `rlm_adk/agents/rlm_loop.py` - LoopAgent + SequentialAgent
+- [ ] Create `rlm_adk/agents/rlm_loop.py` - LoopAgent + SequentialAgent with callbacks
 - [ ] Update `rlm_adk/agent.py` - Integrate with root agent
 - [ ] Update `rlm_adk/agents/__init__.py` - Export new agents
 
 ### Phase 4: Testing
 - [ ] Create `tests/rlm_adk/test_rlm_loop.py`
-- [ ] Create `tests/rlm_adk/test_llm_bridge.py`
-- [ ] Create `tests/rlm_adk/test_rlm_state.py`
+- [ ] Create `tests/rlm_adk/test_callbacks.py`
+- [ ] Create `tests/rlm_adk/test_prompts.py`
+- [ ] Create `tests/rlm_adk/test_metadata.py`
 - [ ] Integration tests with mock ADK context
 
 ### Phase 5: Documentation
 - [ ] Update README with RLM workflow usage
-- [ ] Add example scripts demonstrating RLM
-- [ ] Document configuration options
+- [ ] Document callback hooks and customization
+- [ ] Document custom_metadata schemas
 
 ---
 
-## Key Corrections from Review
+## ADK Callback Reference
 
-### ADK Specialist Corrections Applied:
-1. ✅ Replaced all `Agent` → `LlmAgent`
-2. ✅ Fixed imports: `from google.adk.agents import LlmAgent`
-3. ✅ Added `InvocationContext` import in BaseAgent
-4. ✅ Used `BaseAgent` for completion checker (not LlmAgent)
-5. ✅ Added proper `@tool` decorator with `ToolContext` parameter
+| Callback | When | Use Case |
+|----------|------|----------|
+| `before_agent_callback` | Before agent starts | Initialize state, start timers |
+| `after_agent_callback` | After agent completes | Finalize metrics, cleanup |
+| `before_model_callback` | Before LLM call | Inject history, validate request |
+| `after_model_callback` | After LLM response | Extract metadata, track latency |
+| `before_tool_callback` | Before tool execution | Validate inputs, start timing |
+| `after_tool_callback` | After tool execution | Handle errors, update state |
+| `on_model_error_callback` | On LLM error | Graceful recovery, logging |
 
-### RLM Specialist Corrections Applied:
-1. ✅ Replaced placeholder llm_query with real LLM calls via `llm_bridge.py`
-2. ✅ Implemented explicit `iteration_history` for feedback loop
-3. ✅ Added `llm_query_batched` with async concurrent execution
-4. ✅ Added error handling in execution results
-5. ✅ Clarified session management via `RLMSessionState`
-6. ✅ Ensured message history accumulates via state
+---
+
+## custom_metadata Schema Summary
+
+| Schema | Purpose | Used By |
+|--------|---------|---------|
+| `RLMIterationMetadata` | Code block analysis | `after_model_callback` |
+| `RLMExecutionMetadata` | Execution results | `execute_rlm_iteration` tool |
+| `RLMSubLMCallMetadata` | Sub-LM call tracking | `llm_bridge` |
+| `RLMSessionMetrics` | Aggregated session metrics | `after_agent_callback` |
+| `RLMContextMetadata` | Context description | Context loaders |
 
 ---
 
@@ -1456,13 +1956,19 @@ from google.adk.agents import LoopAgent         # Iterative workflow
 # Events (for BaseAgent)
 from google.adk.events import Event, EventActions
 
-# Invocation Context (for BaseAgent._run_async_impl)
+# Invocation Context
 from google.adk.agents.invocation_context import InvocationContext
 
+# Callbacks
+from google.adk.agents.callback_context import CallbackContext
+
+# Models (for callbacks)
+from google.adk.models import LlmRequest, LlmResponse
+
 # Tools
-from google.adk.tools import tool               # Decorator
+from google.adk.tools import tool
 from google.adk.tools.tool_context import ToolContext
 
-# Content (if needed for Event content)
+# Content
 from google.genai.types import Content, Part
 ```

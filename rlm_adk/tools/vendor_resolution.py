@@ -8,17 +8,14 @@ matching, attribute-based search, and golden record management.
 import os
 from typing import TYPE_CHECKING, Any
 
-from rlm_adk._compat import ToolContextProtocol
-
-if TYPE_CHECKING:
-    from rlm_adk._compat import ToolContext
+from google.adk.tools import ToolContext
 
 
 def find_similar_vendors(
     vendor_name: str,
     hospital_chain: str,
     threshold: float,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Find vendors with similar names across hospital chains.
 
@@ -65,7 +62,7 @@ def resolve_vendor_to_masterdata(
     source_hospital_chain: str,
     masterdata_vendor_id: str,
     confidence_score: float,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Create a mapping from a hospital vendor to a masterdata golden record.
 
@@ -113,7 +110,7 @@ def resolve_vendor_to_masterdata(
 
 
 def get_masterdata_vendor(
-    masterdata_vendor_id: str, tool_context: ToolContextProtocol
+    masterdata_vendor_id: str, tool_context: ToolContext
 ) -> dict:
     """Get details of a masterdata golden record vendor entity.
 
@@ -154,7 +151,7 @@ def create_vendor_mapping(
     duns_number: str,
     primary_address: str,
     source_vendor_ids: list,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Create a new masterdata vendor entity with source mappings.
 
@@ -210,7 +207,7 @@ def search_vendor_by_attributes(
     tax_id: str,
     duns_number: str,
     address_keywords: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext,
 ) -> dict:
     """Search for vendors by business attributes across all sources.
 

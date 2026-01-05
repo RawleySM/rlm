@@ -3110,6 +3110,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "google-adk" },
     { name = "openai" },
     { name = "portkey-ai" },
     { name = "pytest" },
@@ -3120,7 +3121,6 @@ dependencies = [
 
 [package.optional-dependencies]
 adk = [
-    { name = "google-adk" },
     { name = "google-genai" },
     { name = "pydantic" },
 ]
@@ -3134,7 +3134,6 @@ modal = [
 ]
 rlm-adk = [
     { name = "databricks-sdk" },
-    { name = "google-adk" },
     { name = "google-genai" },
     { name = "pydantic" },
 ]
@@ -3158,8 +3157,7 @@ requires-dist = [
     { name = "databricks-sdk", marker = "extra == 'rlm-adk'", specifier = ">=0.20.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=3.0.0" },
     { name = "dill", marker = "extra == 'modal'", specifier = ">=0.3.7" },
-    { name = "google-adk", marker = "extra == 'adk'", specifier = ">=1.0.0" },
-    { name = "google-adk", marker = "extra == 'rlm-adk'", specifier = ">=1.0.0" },
+    { name = "google-adk", specifier = ">=1.0.0" },
     { name = "google-genai", marker = "extra == 'adk'", specifier = ">=1.0.0" },
     { name = "google-genai", marker = "extra == 'rlm-adk'", specifier = ">=1.0.0" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=0.73.0" },

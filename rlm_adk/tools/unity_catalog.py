@@ -7,13 +7,10 @@ including hospital chain ERP databases stored in separate volumes.
 import os
 from typing import TYPE_CHECKING, Any
 
-from rlm_adk._compat import ToolContextProtocol
-
-if TYPE_CHECKING:
-    from rlm_adk._compat import ToolContext
+from google.adk.tools import ToolContext
 
 
-def list_catalogs(tool_context: ToolContextProtocol) -> dict:
+def list_catalogs(tool_context: ToolContext) -> dict:
     """List all available Unity Catalogs in the Databricks workspace.
 
     Use this tool to discover which catalogs are available, including
@@ -43,7 +40,7 @@ def list_catalogs(tool_context: ToolContextProtocol) -> dict:
         }
 
 
-def list_schemas(catalog_name: str, tool_context: ToolContextProtocol) -> dict:
+def list_schemas(catalog_name: str, tool_context: ToolContext) -> dict:
     """List all schemas within a specific Unity Catalog.
 
     Use this tool to explore the database schemas within a hospital chain's
@@ -78,7 +75,7 @@ def list_schemas(catalog_name: str, tool_context: ToolContextProtocol) -> dict:
 
 
 def list_tables(
-    catalog_name: str, schema_name: str, tool_context: ToolContextProtocol
+    catalog_name: str, schema_name: str, tool_context: ToolContext
 ) -> dict:
     """List all tables and views within a specific schema.
 
@@ -116,7 +113,7 @@ def list_tables(
 
 
 def list_volumes(
-    catalog_name: str, schema_name: str, tool_context: ToolContextProtocol
+    catalog_name: str, schema_name: str, tool_context: ToolContext
 ) -> dict:
     """List all volumes within a specific schema.
 
@@ -157,7 +154,7 @@ def get_volume_metadata(
     catalog_name: str,
     schema_name: str,
     volume_name: str,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext
 ) -> dict:
     """Get detailed metadata about a specific Unity Catalog volume.
 
@@ -200,7 +197,7 @@ def read_table_sample(
     schema_name: str,
     table_name: str,
     sample_size: int,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext
 ) -> dict:
     """Read a sample of rows from a table for data exploration.
 
@@ -266,7 +263,7 @@ def create_view(
     view_name: str,
     view_definition: str,
     replace_if_exists: bool,
-    tool_context: ToolContextProtocol,
+    tool_context: ToolContext
 ) -> dict:
     """Create a view in Unity Catalog from a SQL definition.
 

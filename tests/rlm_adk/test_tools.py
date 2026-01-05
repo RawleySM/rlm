@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from rlm_adk._compat import SimpleToolContext
+from rlm_adk.testing import create_tool_context
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ class TestDatabricksREPLTools:
         """Test executing simple Python code."""
         from rlm_adk.tools.databricks_repl import execute_python_code
 
-        ctx = SimpleToolContext({"repl_session_id": "test_session"})
+        ctx = create_tool_context({"repl_session_id": "test_session"})
         result = execute_python_code("x = 1 + 1", ctx)
 
         assert result["status"] == "success"
@@ -37,7 +37,7 @@ class TestDatabricksREPLTools:
         """Test Python code that produces output."""
         from rlm_adk.tools.databricks_repl import execute_python_code
 
-        ctx = SimpleToolContext({"repl_session_id": "test_session_output"})
+        ctx = create_tool_context({"repl_session_id": "test_session_output"})
         result = execute_python_code("print('hello world')", ctx)
 
         assert result["status"] == "success"
@@ -47,7 +47,7 @@ class TestDatabricksREPLTools:
         """Test Python code error handling."""
         from rlm_adk.tools.databricks_repl import execute_python_code
 
-        ctx = SimpleToolContext({"repl_session_id": "test_session_error"})
+        ctx = create_tool_context({"repl_session_id": "test_session_error"})
         result = execute_python_code("raise ValueError('test error')", ctx)
 
         assert result["status"] == "error"
@@ -57,7 +57,7 @@ class TestDatabricksREPLTools:
         """Test SQL query for showing catalogs."""
         from rlm_adk.tools.databricks_repl import execute_sql_query
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = execute_sql_query("SHOW CATALOGS", ctx)
 
         assert result["status"] == "success"
@@ -67,7 +67,7 @@ class TestDatabricksREPLTools:
         """Test SQL SELECT query."""
         from rlm_adk.tools.databricks_repl import execute_sql_query
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = execute_sql_query("SELECT * FROM vendors LIMIT 10", ctx)
 
         assert result["status"] == "success"
@@ -77,7 +77,7 @@ class TestDatabricksREPLTools:
         """Test getting REPL session state."""
         from rlm_adk.tools.databricks_repl import get_repl_session_state
 
-        ctx = SimpleToolContext({"repl_session_id": "test_state_session"})
+        ctx = create_tool_context({"repl_session_id": "test_state_session"})
         result = get_repl_session_state(ctx)
 
         assert result["status"] == "success"
@@ -92,7 +92,7 @@ class TestUnityCatalogTools:
         """Test listing Unity Catalogs."""
         from rlm_adk.tools.unity_catalog import list_catalogs
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = list_catalogs(ctx)
 
         assert result["status"] == "success"
@@ -107,7 +107,7 @@ class TestUnityCatalogTools:
         """Test listing schemas in a catalog."""
         from rlm_adk.tools.unity_catalog import list_schemas
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = list_schemas("hospital_chain_alpha", ctx)
 
         assert result["status"] == "success"
@@ -119,7 +119,7 @@ class TestUnityCatalogTools:
         """Test listing tables in a schema."""
         from rlm_adk.tools.unity_catalog import list_tables
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = list_tables("hospital_chain_alpha", "erp_vendors", ctx)
 
         assert result["status"] == "success"
@@ -131,7 +131,7 @@ class TestUnityCatalogTools:
         """Test listing volumes in a schema."""
         from rlm_adk.tools.unity_catalog import list_volumes
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = list_volumes("hospital_chain_alpha", "erp_vendors", ctx)
 
         assert result["status"] == "success"
@@ -141,7 +141,7 @@ class TestUnityCatalogTools:
         """Test getting volume metadata."""
         from rlm_adk.tools.unity_catalog import get_volume_metadata
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = get_volume_metadata(
             "hospital_chain_alpha", "erp_vendors", "raw_exports", ctx
         )
@@ -154,7 +154,7 @@ class TestUnityCatalogTools:
         """Test reading a sample from a table."""
         from rlm_adk.tools.unity_catalog import read_table_sample
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = read_table_sample(
             "hospital_chain_alpha", "erp_vendors", "vendors", 10, ctx
         )
@@ -168,7 +168,7 @@ class TestUnityCatalogTools:
         """Test creating a view."""
         from rlm_adk.tools.unity_catalog import create_view
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = create_view(
             "healthcare_main",
             "analytics",
@@ -190,7 +190,7 @@ class TestVendorResolutionTools:
         """Test finding similar vendors."""
         from rlm_adk.tools.vendor_resolution import find_similar_vendors
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = find_similar_vendors("MedSupply", "all", 0.7, ctx)
 
         assert result["status"] == "success"
@@ -205,7 +205,7 @@ class TestVendorResolutionTools:
         """Test finding similar vendors filtered by hospital chain."""
         from rlm_adk.tools.vendor_resolution import find_similar_vendors
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = find_similar_vendors(
             "MedSupply", "hospital_chain_alpha", 0.7, ctx
         )
@@ -220,7 +220,7 @@ class TestVendorResolutionTools:
         """Test resolving a vendor to masterdata."""
         from rlm_adk.tools.vendor_resolution import resolve_vendor_to_masterdata
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = resolve_vendor_to_masterdata(
             "ALPHA-V001", "hospital_chain_alpha", "MD-001", 0.95, ctx
         )
@@ -235,7 +235,7 @@ class TestVendorResolutionTools:
         """Test getting masterdata vendor details."""
         from rlm_adk.tools.vendor_resolution import get_masterdata_vendor
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = get_masterdata_vendor("MD-001", ctx)
 
         assert result["status"] == "success"
@@ -248,7 +248,7 @@ class TestVendorResolutionTools:
         """Test getting non-existent masterdata vendor."""
         from rlm_adk.tools.vendor_resolution import get_masterdata_vendor
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = get_masterdata_vendor("MD-NONEXISTENT", ctx)
 
         assert result["status"] == "error"
@@ -258,7 +258,7 @@ class TestVendorResolutionTools:
         """Test creating a new masterdata vendor."""
         from rlm_adk.tools.vendor_resolution import create_vendor_mapping
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = create_vendor_mapping(
             canonical_name="New Vendor Corp",
             tax_id="99-9999999",
@@ -280,7 +280,7 @@ class TestVendorResolutionTools:
         """Test searching vendors by attributes."""
         from rlm_adk.tools.vendor_resolution import search_vendor_by_attributes
 
-        ctx = SimpleToolContext()
+        ctx = create_tool_context()
         result = search_vendor_by_attributes("12-3456789", "", "", ctx)
 
         assert result["status"] == "success"

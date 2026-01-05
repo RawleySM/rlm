@@ -1,53 +1,19 @@
 """Tests for RLM-ADK agents.
 
-Tests the agent definitions and structure. Many tests require
-google-adk to be installed and will be skipped if not available.
+Tests the agent definitions and structure.
 """
 
 import pytest
 
-from rlm_adk._compat import ADK_AVAILABLE
 
-# Skip marker for tests requiring ADK
-requires_adk = pytest.mark.skipif(
-    not ADK_AVAILABLE,
-    reason="google-adk not installed"
-)
-
-
-class TestAgentImportsWithoutADK:
-    """Test that agent modules can be imported without ADK."""
+class TestAgentImports:
+    """Test that agent modules can be imported."""
 
     def test_import_package(self):
         """Test importing the main package."""
         import rlm_adk
 
         assert rlm_adk is not None
-
-    def test_adk_available_flag(self):
-        """Test ADK_AVAILABLE flag is accessible."""
-        from rlm_adk import ADK_AVAILABLE
-
-        # Should be a boolean
-        assert isinstance(ADK_AVAILABLE, bool)
-
-    def test_lazy_agents_exist(self):
-        """Test lazy agent proxies are accessible."""
-        from rlm_adk import (
-            parallel_erp_analysis,
-            root_agent,
-            vendor_resolution_pipeline,
-        )
-
-        # These should be lazy proxies, not None
-        assert root_agent is not None
-        assert parallel_erp_analysis is not None
-        assert vendor_resolution_pipeline is not None
-
-
-@requires_adk
-class TestAgentImportsWithADK:
-    """Tests that require google-adk to be installed."""
 
     def test_import_root_agent_properties(self):
         """Test accessing root agent properties."""
@@ -66,35 +32,8 @@ class TestAgentImportsWithADK:
         assert parallel_erp_analysis.name == "parallel_erp_analysis"
 
 
-class TestAgentStructureWithoutADK:
-    """Test agent structure that works without ADK."""
-
-    def test_erp_analyzer_lazy_proxy_properties(self):
-        """Test ERP analyzer lazy proxy has expected properties."""
-        from rlm_adk.agents import alpha_erp_analyzer
-
-        # These properties work without loading the actual agent
-        assert alpha_erp_analyzer.name == "hospital_chain_alpha_erp_analyzer"
-        assert alpha_erp_analyzer.output_key == "hospital_chain_alpha_vendor_analysis"
-
-    def test_vendor_matcher_lazy_proxy_properties(self):
-        """Test vendor matcher lazy proxy has expected properties."""
-        from rlm_adk.agents import vendor_matcher_agent
-
-        assert vendor_matcher_agent.name == "vendor_matcher"
-        assert vendor_matcher_agent.output_key == "vendor_resolution_results"
-
-    def test_view_generator_lazy_proxy_properties(self):
-        """Test view generator lazy proxy has expected properties."""
-        from rlm_adk.agents import view_generator_agent
-
-        assert view_generator_agent.name == "view_generator"
-        assert view_generator_agent.output_key == "created_views"
-
-
-@requires_adk
-class TestAgentStructureWithADK:
-    """Test agent structure that requires ADK."""
+class TestAgentStructure:
+    """Test agent structure and configuration."""
 
     def test_root_agent_has_tools(self):
         """Test that root agent has required tools."""
@@ -144,7 +83,7 @@ class TestAgentStructureWithADK:
         from rlm_adk.agents.vendor_matcher import vendor_matcher_agent
 
         tool_names = [
-            t.__name__ if callable(t) else str(t) for t in vendor_matcher_agent.tools
+            t.name if hasattr(t, "name") else str(t) for t in vendor_matcher_agent.tools
         ]
 
         # Should have vendor resolution tools
@@ -156,13 +95,12 @@ class TestAgentStructureWithADK:
         from rlm_adk.agents.view_generator import view_generator_agent
 
         tool_names = [
-            t.__name__ if callable(t) else str(t) for t in view_generator_agent.tools
+            t.name if hasattr(t, "name") else str(t) for t in view_generator_agent.tools
         ]
 
         assert any("view" in name.lower() for name in tool_names)
 
 
-@requires_adk
 class TestAgentOutputKeys:
     """Test that agents have appropriate output keys configured."""
 

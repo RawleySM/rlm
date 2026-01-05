@@ -161,7 +161,7 @@ ADK allows you to define agents, tools, and even multi-agent workflows using a s
 *   **Agent with Built-in Tools**:
     ```yaml
     name: search_agent
-    model: gemini-2.0-flash
+    model: gemini-3-pro
     description: 'an agent whose job it is to perform Google search queries and answer questions about the results.'
     instruction: You are an agent whose job is to perform Google search queries and answer questions about the results.
     tools:

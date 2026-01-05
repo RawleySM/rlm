@@ -6,29 +6,32 @@ multiple hospital chains and resolving them to masterdata entities.
 Requires: google-adk (pip install google-adk)
 """
 
-from rlm_adk._compat import ADK_AVAILABLE, check_adk_available
+"""Vendor Matcher agent for masterdata resolution.
 
-_vendor_matcher_agent = None
+Provides an agent specialized in matching vendor records across
+multiple hospital chains and resolving them to masterdata entities.
+
+Requires: google-adk (pip install google-adk)
+"""
+
+from google.adk.agents import Agent
+from google.adk.tools import FunctionTool
+
+from rlm_adk.tools.databricks_repl import execute_python_code, execute_sql_query
+from rlm_adk.tools.vendor_resolution import (
+    create_vendor_mapping,
+    find_similar_vendors,
+    get_masterdata_vendor,
+    resolve_vendor_to_masterdata,
+    search_vendor_by_attributes,
+)
 
 
-def _create_vendor_matcher():
+def create_vendor_matcher() -> Agent:
     """Create the vendor matcher agent."""
-    check_adk_available()
-
-    from google.adk.agents import Agent
-
-    from rlm_adk.tools.databricks_repl import execute_python_code, execute_sql_query
-    from rlm_adk.tools.vendor_resolution import (
-        create_vendor_mapping,
-        find_similar_vendors,
-        get_masterdata_vendor,
-        resolve_vendor_to_masterdata,
-        search_vendor_by_attributes,
-    )
-
     return Agent(
         name="vendor_matcher",
-        model="gemini-2.0-flash",
+        model="gemini-3-pro",
         description="Matches and resolves vendor records from hospital ERPs to masterdata golden records.",
         instruction="""You are a master data management specialist focused on vendor entity resolution.
 
@@ -89,48 +92,16 @@ Provide a resolution report including:
 Store your resolution results in state key 'vendor_resolution_results'.
 """,
         tools=[
-            find_similar_vendors,
-            search_vendor_by_attributes,
-            get_masterdata_vendor,
-            resolve_vendor_to_masterdata,
-            create_vendor_mapping,
-            execute_sql_query,
-            execute_python_code,
+            FunctionTool(find_similar_vendors),
+            FunctionTool(search_vendor_by_attributes),
+            FunctionTool(get_masterdata_vendor),
+            FunctionTool(resolve_vendor_to_masterdata),
+            FunctionTool(create_vendor_mapping),
+            FunctionTool(execute_sql_query),
+            FunctionTool(execute_python_code),
         ],
         output_key="vendor_resolution_results",
     )
 
 
-class _LazyVendorMatcher:
-    """Lazy proxy for vendor matcher agent."""
-
-    def __init__(self):
-        self._agent = None
-
-    def _ensure_loaded(self):
-        if self._agent is None:
-            self._agent = _create_vendor_matcher()
-        return self._agent
-
-    @property
-    def name(self):
-        return "vendor_matcher"
-
-    @property
-    def output_key(self):
-        return "vendor_resolution_results"
-
-    @property
-    def tools(self):
-        return self._ensure_loaded().tools
-
-    def __getattr__(self, name):
-        return getattr(self._ensure_loaded(), name)
-
-    def __repr__(self):
-        if ADK_AVAILABLE:
-            return repr(self._ensure_loaded())
-        return "<LazyVendorMatcher - google-adk not installed>"
-
-
-vendor_matcher_agent = _LazyVendorMatcher()
+vendor_matcher_agent = create_vendor_matcher()
