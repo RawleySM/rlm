@@ -1,6 +1,11 @@
 """RLM-ADK Tools.
 
-Custom tools for Databricks REPL, Unity Catalog, and vendor resolution operations.
+Custom tools for:
+- RLM REPL with llm_query() for recursive decomposition
+- Databricks REPL for Python/SQL execution
+- Unity Catalog for data exploration
+- Vendor resolution for masterdata management
+- Context loading for offloading large datasets
 """
 
 from rlm_adk.tools.databricks_repl import (
@@ -24,8 +29,30 @@ from rlm_adk.tools.vendor_resolution import (
     resolve_vendor_to_masterdata,
     search_vendor_by_attributes,
 )
+from rlm_adk.tools.rlm_tools import (
+    rlm_execute_code,
+    rlm_load_context,
+    rlm_query_context,
+    rlm_get_session_state,
+    rlm_clear_session,
+)
+from rlm_adk.tools.context_loader import (
+    load_vendor_data_to_context,
+    load_custom_context,
+    load_query_results_to_context,
+)
 
 __all__ = [
+    # RLM REPL tools (core recursive decomposition)
+    "rlm_execute_code",
+    "rlm_load_context",
+    "rlm_query_context",
+    "rlm_get_session_state",
+    "rlm_clear_session",
+    # Context loading tools
+    "load_vendor_data_to_context",
+    "load_custom_context",
+    "load_query_results_to_context",
     # Databricks REPL tools
     "execute_python_code",
     "execute_sql_query",
