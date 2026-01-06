@@ -2660,6 +2660,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py4j"
+version = "0.10.9.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/31/0b210511177070c8d5d3059556194352e5753602fa64b85b7ab81ec1a009/py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879", size = 761089, upload-time = "2025-01-15T03:53:18.624Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/db/ea0203e495be491c85af87b66e37acfd3bf756fd985f87e46fc5e3bf022c/py4j-0.10.9.9-py2.py3-none-any.whl", hash = "sha256:c7c26e4158defb37b0bb124933163641a2ff6e3a3913f7811b0ddbe07ed61533", size = 203008, upload-time = "2025-01-15T03:53:15.648Z" },
+]
+
+[[package]]
 name = "pyarrow"
 version = "22.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2907,6 +2916,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyspark"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "py4j" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/88/0d/f280cbd070e424008f370c068c6a371e0cbb902e33d9709b01e97d479b01/pyspark-4.1.0.tar.gz", hash = "sha256:09c714ada88dfac3e1213c066617c6f473c1e22fbe279855028f77e12434147d", size = 455337789, upload-time = "2025-12-16T12:30:47.141Z" }
+
+[[package]]
 name = "pytest"
 version = "9.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3132,6 +3150,9 @@ modal = [
     { name = "dill" },
     { name = "modal" },
 ]
+native = [
+    { name = "pyspark" },
+]
 rlm-adk = [
     { name = "databricks-sdk" },
     { name = "google-genai" },
@@ -3165,12 +3186,13 @@ requires-dist = [
     { name = "portkey-ai", specifier = ">=2.1.0" },
     { name = "pydantic", marker = "extra == 'adk'", specifier = ">=2.0.0" },
     { name = "pydantic", marker = "extra == 'rlm-adk'", specifier = ">=2.0.0" },
+    { name = "pyspark", marker = "extra == 'native'", specifier = ">=3.4.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rich", specifier = ">=13.0.0" },
 ]
-provides-extras = ["modal", "adk", "databricks", "rlm-adk"]
+provides-extras = ["modal", "adk", "databricks", "rlm-adk", "native"]
 
 [package.metadata.requires-dev]
 dev = [

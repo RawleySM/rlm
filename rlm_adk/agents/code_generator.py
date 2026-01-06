@@ -2,14 +2,13 @@
 
 This agent generates Python code that uses llm_query() for recursive
 decomposition of problems. Uses the composed system prompt from
-rlm/utils/prompts.py with healthcare extensions.
+rlm_adk/prompts.py with healthcare extensions.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from google.adk.agents import LlmAgent
+
 from rlm_adk.callbacks import get_code_generator_callbacks
 from rlm_adk.prompts import get_code_generator_instruction
 

@@ -12,11 +12,13 @@ This enables LMs to programmatically decompose large problems (like vendor
 resolution across millions of hospital records) by spawning sub-LM calls.
 """
 
-import asyncio
 import io
 import re
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
+from rlm_adk.runtime import get_execution_mode, get_spark_session
 
 
 class RLMREPLEnvironment:
@@ -34,6 +36,7 @@ class RLMREPLEnvironment:
         llm_query_fn: Callable[[str], str],
         llm_query_batched_fn: Callable[[list[str]], list[str]] | None = None,
         context: Any = None,
+        spark: Any = None,
     ):
         """Initialize the RLM REPL environment.
 
@@ -44,6 +47,7 @@ class RLMREPLEnvironment:
                                   Signature: (prompts: list[str]) -> list[str]
                                   If not provided, falls back to sequential llm_query calls.
             context: Initial context data to offload to the REPL.
+            spark: Optional SparkSession for native execution mode.
         """
         self._llm_query_fn = llm_query_fn
         self._llm_query_batched_fn = llm_query_batched_fn
@@ -52,15 +56,42 @@ class RLMREPLEnvironment:
         self._execution_count = 0
         self._llm_call_count = 0
 
+        # Spark injection: use provided session, auto-get in native mode, or None
+        if spark is not None:
+            self._spark = spark
+        elif get_execution_mode() == "native":
+            self._spark = get_spark_session()
+        else:
+            self._spark = None
+
     @property
     def context(self) -> Any:
-        """Get the current context."""
+        """Get the current context with lazy DataFrame resolution."""
+        # Lazy resolution: if context is a table name string, load it
+        if isinstance(self._context, str) and self._spark is not None:
+            # Check if it looks like a table reference (catalog.schema.table)
+            if "." in self._context:
+                try:
+                    return self._spark.table(self._context)
+                except Exception:
+                    pass  # Fall through to return as-is
         return self._context
 
     @context.setter
     def context(self, value: Any) -> None:
         """Set the context."""
         self._context = value
+
+    def is_dataframe_context(self) -> bool:
+        """Check if context is a Spark DataFrame."""
+        if self._spark is None:
+            return False
+        try:
+            from pyspark.sql import DataFrame
+
+            return isinstance(self.context, DataFrame)
+        except ImportError:
+            return False
 
     def llm_query(self, prompt: str, model: str | None = None) -> str:
         """Make a recursive sub-LM call.
@@ -122,9 +153,10 @@ class RLMREPLEnvironment:
         # comprehensions (they can only see globals, not locals in separate dicts)
         exec_namespace = {
             "__builtins__": __builtins__,
-            "context": self._context,
+            "context": self._context,  # Use self._context to avoid lazy eval here
             "llm_query": self.llm_query,
             "llm_query_batched": self.llm_query_batched,
+            "spark": self._spark,  # Inject SparkSession
         }
 
         # Include previously defined variables in the same namespace
@@ -139,7 +171,7 @@ class RLMREPLEnvironment:
             exec(code, exec_namespace)
 
             # Update persistent local variables (excluding builtins and RLM functions)
-            reserved_keys = {"__builtins__", "context", "llm_query", "llm_query_batched"}
+            reserved_keys = {"__builtins__", "context", "llm_query", "llm_query_batched", "spark"}
             for key, value in exec_namespace.items():
                 if not key.startswith("_") and key not in reserved_keys:
                     self._local_vars[key] = value
@@ -259,6 +291,7 @@ def get_or_create_repl_session(
     llm_query_fn: Callable[[str], str],
     llm_query_batched_fn: Callable[[list[str]], list[str]] | None = None,
     context: Any = None,
+    spark: Any = None,
 ) -> RLMREPLEnvironment:
     """Get or create an RLM REPL session.
 
@@ -269,6 +302,7 @@ def get_or_create_repl_session(
         llm_query_fn: Function for sub-LM calls.
         llm_query_batched_fn: Optional function for batched calls.
         context: Initial context (only used when creating new session).
+        spark: Optional SparkSession (only used when creating new session).
 
     Returns:
         The RLM REPL environment for this session.
@@ -278,6 +312,7 @@ def get_or_create_repl_session(
             llm_query_fn=llm_query_fn,
             llm_query_batched_fn=llm_query_batched_fn,
             context=context,
+            spark=spark,
         )
     return _ACTIVE_REPL_SESSIONS[session_id]
 

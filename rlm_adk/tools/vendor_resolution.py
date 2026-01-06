@@ -6,7 +6,6 @@ matching, attribute-based search, and golden record management.
 """
 
 import os
-from typing import TYPE_CHECKING, Any
 
 from google.adk.tools import ToolContext
 
@@ -463,7 +462,6 @@ def _search_similar_vendors(
     host: str, token: str, vendor_name: str, hospital_chain: str, threshold: float
 ) -> dict:
     """Search for similar vendors using Databricks SQL."""
-    from rlm_adk.tools.databricks_repl import execute_sql_query
 
     # Use soundex or levenshtein for fuzzy matching in Spark SQL
     query = f"""
@@ -507,7 +505,6 @@ def _create_vendor_mapping_record(
     confidence_score: float,
 ) -> dict:
     """Create vendor mapping via SQL insert."""
-    from rlm_adk.tools.databricks_repl import execute_sql_query
 
     query = f"""
     INSERT INTO masterdata_vendors.mappings.vendor_mappings
@@ -523,7 +520,6 @@ def _create_vendor_mapping_record(
 
 def _fetch_masterdata_vendor(host: str, token: str, masterdata_vendor_id: str) -> dict:
     """Fetch masterdata vendor from Unity Catalog."""
-    from rlm_adk.tools.databricks_repl import execute_sql_query
 
     query = f"""
     SELECT

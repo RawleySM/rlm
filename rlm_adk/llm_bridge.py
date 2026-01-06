@@ -12,12 +12,13 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from google.adk.agents.invocation_context import InvocationContext
 
 from rlm_adk.metadata import RLMSubLMCallMetadata
-
+from rlm_adk.runtime import get_llm_max_retries, get_llm_timeout_seconds
 
 # Global call counter for metadata tracking
 _call_counter = 0
@@ -34,6 +35,40 @@ def reset_sub_lm_call_metadata() -> None:
     global _call_counter, _call_metadata
     _call_counter = 0
     _call_metadata = []
+
+
+def _retry_with_backoff(
+    func: Callable[[], Any],
+    max_retries: int | None = None,
+    base_delay: float = 1.0,
+) -> Any:
+    """Execute a function with exponential backoff retry logic.
+
+    Args:
+        func: Callable to execute
+        max_retries: Max retry attempts (uses config default if None)
+        base_delay: Base delay in seconds (doubles each retry)
+
+    Returns:
+        Result of func() if successful
+
+    Raises:
+        Last exception if all retries exhausted
+    """
+    if max_retries is None:
+        max_retries = get_llm_max_retries()
+
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                wait_time = base_delay * (2**attempt)
+                time.sleep(wait_time)
+
+    raise last_exception
 
 
 def create_llm_query_bridge(
@@ -64,6 +99,8 @@ def create_llm_query_bridge(
         _call_counter += 1
         call_index = _call_counter
 
+        timeout = get_llm_timeout_seconds()
+
         if invocation_context is None:
             response = _llm_query_fallback(prompt, model)
         else:
@@ -79,9 +116,10 @@ def create_llm_query_bridge(
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     import concurrent.futures
+
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         future = executor.submit(asyncio.run, _async_query())
-                        response = future.result(timeout=60)
+                        response = future.result(timeout=timeout)
                 else:
                     response = loop.run_until_complete(_async_query())
 
@@ -137,6 +175,8 @@ def create_llm_query_batched_bridge(
         call_index = _call_counter
         batch_size = len(prompts)
 
+        timeout = get_llm_timeout_seconds()
+
         if invocation_context is None:
             results = [single_query(p) for p in prompts]
         else:
@@ -161,9 +201,10 @@ def create_llm_query_batched_bridge(
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     import concurrent.futures
+
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         future = executor.submit(asyncio.run, _async_batch())
-                        results = future.result(timeout=120)
+                        results = future.result(timeout=timeout * 2)  # Double timeout for batched calls
                 else:
                     results = loop.run_until_complete(_async_batch())
 
@@ -190,18 +231,48 @@ def create_llm_query_batched_bridge(
 
 
 def _llm_query_fallback(prompt: str, model: str) -> str:
-    """Fallback llm_query using direct Gemini API or simulation."""
+    """Fallback llm_query using direct Gemini API with retry logic."""
     api_key = os.getenv("GOOGLE_API_KEY")
-    if api_key:
+
+    if not api_key:
+        return _simulate_llm_response(prompt)
+
+    max_retries = get_llm_max_retries()
+    timeout = get_llm_timeout_seconds()
+
+    last_exception = None
+    for attempt in range(max_retries):
         try:
             import google.generativeai as genai
+
             genai.configure(api_key=api_key)
             gemini_model = genai.GenerativeModel(model)
-            response = gemini_model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            print(f"[llm_query_fallback] Gemini API failed: {e}")
 
+            # Configure generation with timeout
+            response = gemini_model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(),
+                request_options={"timeout": timeout},
+            )
+            return response.text
+
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                # Exponential backoff: 1s, 2s, 4s, ...
+                wait_time = 2**attempt
+                print(
+                    f"[llm_query_fallback] Attempt {attempt + 1} failed: {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                print(
+                    f"[llm_query_fallback] All {max_retries} attempts failed. "
+                    f"Last error: {last_exception}"
+                )
+
+    # All retries exhausted, fall back to simulation
     return _simulate_llm_response(prompt)
 
 

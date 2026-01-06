@@ -1,0 +1,19 @@
+resources:
+  jobs:
+    rlm_adk_job:
+      name: rlm_adk_job
+      tasks:
+        - task_key: main_task
+          job_cluster_key: job_cluster
+          python_wheel_task:
+            package_name: rlm
+            entry_point: rlm-adk-job
+          libraries:
+            - whl: ../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: job_cluster
+          new_cluster:
+            spark_version: 13.3.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 1

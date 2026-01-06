@@ -6,7 +6,7 @@ RLM REPL environment with real llm_query() access.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool, ToolContext
@@ -30,10 +30,10 @@ def execute_rlm_iteration(tool_context: ToolContext) -> dict[str, Any]:
     import time
 
     from rlm_adk.llm_bridge import (
-        create_llm_query_bridge,
         create_llm_query_batched_bridge,
-        reset_sub_lm_call_metadata,
+        create_llm_query_bridge,
         get_sub_lm_call_metadata,
+        reset_sub_lm_call_metadata,
     )
     from rlm_adk.rlm_repl import find_code_blocks, get_or_create_repl_session
     from rlm_adk.rlm_state import get_or_create_rlm_state

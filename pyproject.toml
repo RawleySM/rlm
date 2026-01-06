@@ -33,6 +33,12 @@ rlm-adk = [
     "pydantic>=2.0.0",
     "databricks-sdk>=0.20.0",
 ]
+native = [
+    "pyspark>=3.4.0",
+]
+
+[project.scripts]
+rlm-adk-job = "rlm_adk.entrypoint:cli"
 
 [build-system]
 requires = ["setuptools>=61.0"]

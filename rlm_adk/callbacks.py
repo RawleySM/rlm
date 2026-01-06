@@ -10,16 +10,13 @@ from __future__ import annotations
 
 import time
 import traceback
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmRequest, LlmResponse
-from google.adk.tools import ToolContext
 
-from rlm_adk.metadata import RLMExecutionMetadata, RLMIterationMetadata
+from rlm_adk.metadata import RLMIterationMetadata
 from rlm_adk.rlm_state import get_or_create_rlm_state
-
 
 # =============================================================================
 # Callback Context Keys
@@ -140,7 +137,7 @@ def after_rlm_loop_callback(
 def before_model_callback(
     callback_context: CallbackContext,
     llm_request: LlmRequest,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
     """Inspect/modify LLM request before sending.
 
     This callback:
@@ -175,7 +172,7 @@ def before_model_callback(
 def before_model_with_history_injection(
     callback_context: CallbackContext,
     llm_request: LlmRequest,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
     """Before-model callback that injects iteration history into prompts.
 
     Use this for the code_generator agent to ensure it sees full history.
@@ -294,7 +291,7 @@ def before_tool_callback(
     callback_context: CallbackContext,
     tool_name: str,
     tool_args: dict[str, Any],
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Validate and potentially modify tool inputs.
 
     This callback:
@@ -410,7 +407,7 @@ def after_tool_callback(
 def on_model_error_callback(
     callback_context: CallbackContext,
     error: Exception,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
     """Handle model call errors gracefully.
 
     This callback:

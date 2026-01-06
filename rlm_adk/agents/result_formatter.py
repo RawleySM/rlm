@@ -5,8 +5,6 @@ Formats the final RLM answer with execution metrics for user presentation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from google.adk.agents import LlmAgent
 
 

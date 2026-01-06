@@ -13,7 +13,77 @@ import os
 from typing import Any
 
 from google.adk.tools import ToolContext
+
+from rlm_adk.runtime import get_execution_mode, get_spark_session
 from rlm_adk.tools.rlm_tools import rlm_load_context
+
+
+def _load_vendor_data_native(
+    hospital_chains: list[str],
+    include_masterdata: bool,
+    tool_context: ToolContext,
+) -> dict:
+    """Load vendor data as Spark DataFrames in native mode."""
+    spark = get_spark_session()
+
+    # Create a UNION of all vendor tables
+    union_parts = []
+    for chain in hospital_chains:
+        # Add source chain identifier
+        union_parts.append(
+            f"SELECT *, '{chain}' as source_chain FROM {chain}.erp_vendors.vendors"
+        )
+
+    if union_parts:
+        union_query = " UNION ALL ".join(union_parts)
+        vendor_df = spark.sql(union_query)
+
+        # Create temp view for easy access
+        vendor_df.createOrReplaceTempView("rlm_vendor_context")
+
+        # Get count without collecting all data
+        vendor_count = vendor_df.count()
+    else:
+        vendor_df = None
+        vendor_count = 0
+
+    # Load masterdata if requested
+    masterdata_df = None
+    if include_masterdata:
+        try:
+            masterdata_df = spark.table("masterdata_vendors.golden_records.vendors")
+            masterdata_df.createOrReplaceTempView("rlm_masterdata_context")
+        except Exception:
+            pass  # Masterdata table may not exist
+
+    # Build context as dict of DataFrames (not collected data!)
+    context_data = {"vendors": vendor_df}
+    if masterdata_df is not None:
+        context_data["masterdata"] = masterdata_df
+
+    # Load into RLM context
+    description = (
+        f"Spark DataFrame with {vendor_count} vendors from {len(hospital_chains)} chains"
+        + (" with masterdata" if include_masterdata and masterdata_df else "")
+    )
+
+    load_result = rlm_load_context(
+        context_data=context_data,
+        context_description=description,
+        tool_context=tool_context,
+    )
+
+    return {
+        "status": "success",
+        "context_summary": description,
+        "total_vendors": vendor_count,
+        "chains_loaded": hospital_chains,
+        "masterdata_included": include_masterdata and masterdata_df is not None,
+        "context_type": "spark_dataframe",
+        "temp_views_created": ["rlm_vendor_context"] + (["rlm_masterdata_context"] if masterdata_df else []),
+        "rlm_load_result": load_result,
+        "next_step": "Use rlm_execute_code with spark.sql() or DataFrame operations",
+    }
 
 
 def load_vendor_data_to_context(
@@ -56,7 +126,11 @@ def load_vendor_data_to_context(
         ```
         Then use rlm_execute_code to analyze with llm_query().
     """
-    from rlm_adk.tools.unity_catalog import list_tables, read_table_sample
+    # Check for native mode first
+    if get_execution_mode() == "native":
+        return _load_vendor_data_native(hospital_chains, include_masterdata, tool_context)
+
+    # Existing local mode implementation
 
     context_data = {}
     total_vendors = 0
@@ -292,6 +366,45 @@ def load_custom_context(
     )
 
 
+def _load_query_results_native(
+    sql_query: str,
+    description: str,
+    tool_context: ToolContext,
+) -> dict:
+    """Execute query and load as DataFrame in native mode."""
+    spark = get_spark_session()
+
+    try:
+        df = spark.sql(sql_query)
+        row_count = df.count()
+        columns = df.columns
+
+        # Create temp view
+        df.createOrReplaceTempView("rlm_query_context")
+
+        load_result = rlm_load_context(
+            context_data=df,
+            context_description=description,
+            tool_context=tool_context,
+        )
+
+        return {
+            "status": "success",
+            "rows_loaded": row_count,
+            "columns": columns,
+            "description": description,
+            "context_type": "spark_dataframe",
+            "temp_view": "rlm_query_context",
+            "load_result": load_result,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Query failed: {str(e)}",
+            "query": sql_query,
+        }
+
+
 def load_query_results_to_context(
     sql_query: str,
     description: str,
@@ -317,6 +430,11 @@ def load_query_results_to_context(
         )
         ```
     """
+    # Check for native mode
+    if get_execution_mode() == "native":
+        return _load_query_results_native(sql_query, description, tool_context)
+
+    # Existing local mode implementation
     from rlm_adk.tools.databricks_repl import execute_sql_query
 
     # Execute the query
@@ -336,7 +454,7 @@ def load_query_results_to_context(
     # Convert to list of dicts if we have column names
     if columns and data:
         structured_data = [
-            dict(zip(columns, row)) for row in data
+            dict(zip(columns, row, strict=False)) for row in data
         ]
     else:
         structured_data = data

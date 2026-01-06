@@ -2,12 +2,18 @@
 
 Provides tools for executing Python code and SQL queries in a Databricks
 workspace environment with session state management.
+
+Supports dual-mode execution:
+- Local mode: Uses REST APIs for remote Databricks execution
+- Native mode: Uses direct SparkSession when running on Databricks clusters
 """
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from google.adk.tools import ToolContext
+
+from rlm_adk.runtime import get_execution_mode, get_spark_session
 
 # Session state storage for REPL variables
 _REPL_SESSION_STATE: dict[str, Any] = {}
@@ -19,6 +25,10 @@ def execute_python_code(code: str, tool_context: ToolContext) -> dict:
     Use this tool to run Python code for data analysis, transformations,
     and creating visualizations. The code runs in a persistent session
     where variables are preserved between executions.
+
+    Supports dual-mode execution:
+    - Native mode: Direct SparkSession execution on Databricks clusters
+    - Local mode: REST API calls or simulation for development
 
     Args:
         code: The Python code to execute. Can include pandas, pyspark,
@@ -33,6 +43,13 @@ def execute_python_code(code: str, tool_context: ToolContext) -> dict:
             - 'error_message' (str, optional): Error details if execution failed
     """
     try:
+        # Check for native mode execution
+        if get_execution_mode() == "native":
+            spark = get_spark_session()
+            if spark:
+                return _execute_native_python(code, spark, tool_context)
+
+        # Local mode: use REST API or simulation
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
         cluster_id = os.getenv("DATABRICKS_CLUSTER_ID")
@@ -57,6 +74,10 @@ def execute_sql_query(query: str, tool_context: ToolContext) -> dict:
     Use this tool to run SQL queries for data exploration, creating views,
     and performing aggregations across hospital ERP databases and vendor data.
 
+    Supports dual-mode execution:
+    - Native mode: Direct SparkSession SQL execution on Databricks clusters
+    - Local mode: REST API calls or simulation for development
+
     Args:
         query: The SQL query to execute. Supports Spark SQL syntax and
                Unity Catalog three-level namespace (catalog.schema.table).
@@ -71,6 +92,13 @@ def execute_sql_query(query: str, tool_context: ToolContext) -> dict:
             - 'error_message' (str, optional): Error details if query failed
     """
     try:
+        # Check for native mode execution
+        if get_execution_mode() == "native":
+            spark = get_spark_session()
+            if spark:
+                return _execute_native_sql(query, spark)
+
+        # Local mode: use REST API or simulation
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
         warehouse_id = os.getenv("DATABRICKS_SQL_WAREHOUSE_ID")
@@ -159,7 +187,6 @@ def _simulate_python_execution(code: str, tool_context: ToolContext) -> dict:
     old_stdout = sys.stdout
     sys.stdout = captured_output = io.StringIO()
 
-    result = None
     try:
         # Execute the code
         exec_globals = {"__builtins__": __builtins__}
@@ -257,6 +284,119 @@ def _simulate_sql_execution(query: str, tool_context: ToolContext) -> dict:
             "message": "Query executed successfully",
             "execution_time_ms": 50.0,
         }
+
+
+def _execute_native_sql(query: str, spark) -> dict:
+    """Execute SQL query via native SparkSession.
+
+    Args:
+        query: SQL query to execute
+        spark: Active SparkSession instance
+
+    Returns:
+        dict with same schema as _execute_databricks_sql:
+            - status: "success" or "error"
+            - columns: list of column names
+            - data: list of row dicts
+            - row_count: number of rows returned
+            - error_message: error details if failed
+    """
+    try:
+        import time
+
+        start_time = time.time()
+
+        # Execute the SQL query
+        df = spark.sql(query)
+
+        # Collect results with limit
+        rows = df.limit(1000).collect()
+
+        # Get column names
+        columns = df.columns
+
+        # Convert rows to list of dicts
+        data = [row.asDict() for row in rows]
+
+        execution_time_ms = (time.time() - start_time) * 1000
+
+        return {
+            "status": "success",
+            "columns": columns,
+            "data": data,
+            "row_count": len(data),
+            "execution_time_ms": execution_time_ms,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Native SQL execution failed: {str(e)}",
+        }
+
+
+def _execute_native_python(
+    code: str, spark, tool_context: ToolContext
+) -> dict:
+    """Execute Python code with native SparkSession available.
+
+    Args:
+        code: Python code to execute
+        spark: Active SparkSession instance
+        tool_context: ADK ToolContext for session management
+
+    Returns:
+        dict with same schema as _simulate_python_execution:
+            - status: "success" or "error"
+            - output: stdout from execution
+            - variables: list of new/modified variable names
+            - error_message: error details if failed
+    """
+    import io
+    import sys
+
+    session_id = tool_context.state.get("repl_session_id", "default")
+    if session_id not in _REPL_SESSION_STATE:
+        _REPL_SESSION_STATE[session_id] = {}
+
+    local_vars = _REPL_SESSION_STATE[session_id].copy()
+
+    # Capture stdout
+    old_stdout = sys.stdout
+    sys.stdout = captured_output = io.StringIO()
+
+    try:
+        # Execute the code with spark available in namespace
+        exec_globals = {
+            "__builtins__": __builtins__,
+            "spark": spark,
+        }
+        exec(code, exec_globals, local_vars)
+
+        # Track new/modified variables (exclude 'spark' from tracking)
+        new_vars = [
+            k for k in local_vars
+            if k not in _REPL_SESSION_STATE.get(session_id, {})
+            and k != "spark"
+        ]
+        _REPL_SESSION_STATE[session_id] = local_vars
+
+        output = captured_output.getvalue()
+
+        return {
+            "status": "success",
+            "output": output if output else None,
+            "variables": new_vars if new_vars else None,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": str(e),
+            "output": captured_output.getvalue(),
+        }
+    finally:
+        sys.stdout = old_stdout
 
 
 def _execute_databricks_python(

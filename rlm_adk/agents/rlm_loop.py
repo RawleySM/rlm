@@ -6,9 +6,8 @@ into a LoopAgent workflow with callbacks for state management.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from google.adk.agents import LoopAgent, SequentialAgent
+
 from rlm_adk.agents.code_executor import make_code_executor
 from rlm_adk.agents.code_generator import make_code_generator
 from rlm_adk.agents.completion_checker import RLMCompletionChecker
@@ -72,7 +71,7 @@ def make_rlm_completion_workflow(max_iterations: int = 10) -> SequentialAgent:
         3. Continues until FINAL answer is produced
         4. Formats results for user presentation
 
-        Uses composed system prompt from rlm/utils/prompts.py
+        Uses composed system prompt from rlm_adk/prompts.py
         with healthcare vendor management extensions.
         """,
         sub_agents=[

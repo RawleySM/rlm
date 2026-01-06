@@ -2,12 +2,17 @@
 
 Provides tools for exploring and operating on Unity Catalog resources
 including hospital chain ERP databases stored in separate volumes.
+
+Supports dual-mode execution:
+- Local mode: Uses REST API calls to Databricks workspace
+- Native mode: Uses SparkSession SQL directly on Databricks cluster
 """
 
 import os
-from typing import TYPE_CHECKING, Any
 
 from google.adk.tools import ToolContext
+
+from rlm_adk.runtime import get_execution_mode, get_spark_session
 
 
 def list_catalogs(tool_context: ToolContext) -> dict:
@@ -15,6 +20,10 @@ def list_catalogs(tool_context: ToolContext) -> dict:
 
     Use this tool to discover which catalogs are available, including
     hospital chain ERP databases and the masterdata vendor catalog.
+
+    Supports dual-mode execution:
+    - Native mode: Uses SparkSession SHOW CATALOGS
+    - Local mode: Uses REST API calls
 
     Returns:
         dict: Contains catalog listing results.
@@ -25,6 +34,11 @@ def list_catalogs(tool_context: ToolContext) -> dict:
             - 'error_message' (str, optional): Error details if failed
     """
     try:
+        # Native mode: use SparkSession directly
+        if get_execution_mode() == "native":
+            return _native_list_catalogs()
+
+        # Local mode: use REST API
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
 
@@ -46,6 +60,10 @@ def list_schemas(catalog_name: str, tool_context: ToolContext) -> dict:
     Use this tool to explore the database schemas within a hospital chain's
     ERP catalog or the masterdata vendor catalog.
 
+    Supports dual-mode execution:
+    - Native mode: Uses SparkSession SHOW SCHEMAS
+    - Local mode: Uses REST API calls
+
     Args:
         catalog_name: The name of the catalog to list schemas from.
 
@@ -59,6 +77,11 @@ def list_schemas(catalog_name: str, tool_context: ToolContext) -> dict:
             - 'error_message' (str, optional): Error details if failed
     """
     try:
+        # Native mode: use SparkSession directly
+        if get_execution_mode() == "native":
+            return _native_list_schemas(catalog_name)
+
+        # Local mode: use REST API
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
 
@@ -82,6 +105,10 @@ def list_tables(
     Use this tool to discover available tables in a hospital's ERP schema
     or vendor data schema, including their types (TABLE, VIEW, MATERIALIZED VIEW).
 
+    Supports dual-mode execution:
+    - Native mode: Uses SparkSession SHOW TABLES
+    - Local mode: Uses REST API calls
+
     Args:
         catalog_name: The name of the catalog containing the schema.
         schema_name: The name of the schema to list tables from.
@@ -97,6 +124,11 @@ def list_tables(
             - 'error_message' (str, optional): Error details if failed
     """
     try:
+        # Native mode: use SparkSession directly
+        if get_execution_mode() == "native":
+            return _native_list_tables(catalog_name, schema_name)
+
+        # Local mode: use REST API
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
 
@@ -120,6 +152,9 @@ def list_volumes(
     Use this tool to discover Unity Catalog volumes containing raw files,
     data exports, or unstructured data from hospital ERP systems.
 
+    Note: Both native and local modes use REST API for this operation,
+    as Spark SQL does not have a SHOW VOLUMES command.
+
     Args:
         catalog_name: The name of the catalog containing the schema.
         schema_name: The name of the schema to list volumes from.
@@ -138,9 +173,18 @@ def list_volumes(
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
 
+        # Note: Both native and local modes use REST API for volumes
+        # because Spark SQL doesn't have SHOW VOLUMES command
         if not all([databricks_host, databricks_token]):
             return _simulate_list_volumes(catalog_name, schema_name)
 
+        # Native mode with credentials available: use REST API via native helper
+        if get_execution_mode() == "native":
+            return _native_list_volumes(
+                databricks_host, databricks_token, catalog_name, schema_name
+            )
+
+        # Local mode: use REST API directly
         return _api_list_volumes(databricks_host, databricks_token, catalog_name, schema_name)
 
     except Exception as e:
@@ -161,6 +205,10 @@ def get_volume_metadata(
     Use this tool to inspect volume properties, storage location, and
     access permissions for a hospital ERP data volume.
 
+    Supports dual-mode execution:
+    - Native mode: Uses SparkSession DESCRIBE VOLUME
+    - Local mode: Uses REST API calls
+
     Args:
         catalog_name: The name of the catalog containing the volume.
         schema_name: The name of the schema containing the volume.
@@ -175,6 +223,11 @@ def get_volume_metadata(
             - 'error_message' (str, optional): Error details if failed
     """
     try:
+        # Native mode: use SparkSession DESCRIBE VOLUME
+        if get_execution_mode() == "native":
+            return _native_get_volume_metadata(catalog_name, schema_name, volume_name)
+
+        # Local mode: use REST API
         databricks_host = os.getenv("DATABRICKS_HOST")
         databricks_token = os.getenv("DATABRICKS_TOKEN")
 
@@ -318,6 +371,164 @@ def create_view(
             "status": "error",
             "error_message": f"Failed to create view: {str(e)}",
         }
+
+
+# Native implementation functions (SparkSession on Databricks cluster)
+
+
+def _native_list_catalogs() -> dict:
+    """List catalogs using SparkSession in native mode."""
+    spark = get_spark_session()
+    if spark is None:
+        raise RuntimeError("SparkSession not available in native mode")
+
+    rows = spark.sql("SHOW CATALOGS").collect()
+    return {
+        "status": "success",
+        "catalogs": [{"name": row.catalog} for row in rows],
+        "count": len(rows),
+    }
+
+
+def _native_list_schemas(catalog_name: str) -> dict:
+    """List schemas using SparkSession in native mode."""
+    spark = get_spark_session()
+    if spark is None:
+        raise RuntimeError("SparkSession not available in native mode")
+
+    rows = spark.sql(f"SHOW SCHEMAS IN {catalog_name}").collect()
+    # SHOW SCHEMAS returns 'databaseName' or 'namespace' column depending on version
+    schemas = []
+    for row in rows:
+        # Try different possible column names
+        name = None
+        if hasattr(row, "databaseName"):
+            name = row.databaseName
+        elif hasattr(row, "namespace"):
+            name = row.namespace
+        elif hasattr(row, "schemaName"):
+            name = row.schemaName
+        else:
+            # Fallback to first column
+            name = row[0]
+        schemas.append({"name": name, "owner": None, "comment": None})
+
+    return {
+        "status": "success",
+        "catalog": catalog_name,
+        "schemas": schemas,
+        "count": len(schemas),
+    }
+
+
+def _native_list_tables(catalog_name: str, schema_name: str) -> dict:
+    """List tables using SparkSession in native mode."""
+    spark = get_spark_session()
+    if spark is None:
+        raise RuntimeError("SparkSession not available in native mode")
+
+    rows = spark.sql(f"SHOW TABLES IN {catalog_name}.{schema_name}").collect()
+    tables = []
+    for row in rows:
+        # SHOW TABLES returns columns: database, tableName, isTemporary
+        name = None
+        is_temporary = False
+        if hasattr(row, "tableName"):
+            name = row.tableName
+        elif hasattr(row, "table"):
+            name = row.table
+        else:
+            # Fallback to second column (first is database)
+            name = row[1] if len(row) > 1 else row[0]
+
+        if hasattr(row, "isTemporary"):
+            is_temporary = row.isTemporary
+
+        tables.append({
+            "name": name,
+            "type": "TEMPORARY" if is_temporary else "TABLE",
+            "owner": None,
+            "comment": None,
+            "created_at": None,
+        })
+
+    return {
+        "status": "success",
+        "catalog": catalog_name,
+        "schema": schema_name,
+        "tables": tables,
+        "count": len(tables),
+    }
+
+
+def _native_list_volumes(
+    host: str, token: str, catalog_name: str, schema_name: str
+) -> dict:
+    """List volumes - falls back to REST API as Spark SQL lacks SHOW VOLUMES.
+
+    Note: Spark SQL doesn't have a SHOW VOLUMES command, so even in native mode
+    we use the REST API for this operation.
+    """
+    # Fall back to REST API as Spark SQL doesn't support SHOW VOLUMES
+    return _api_list_volumes(host, token, catalog_name, schema_name)
+
+
+def _native_get_volume_metadata(
+    catalog_name: str, schema_name: str, volume_name: str
+) -> dict:
+    """Get volume metadata using SparkSession DESCRIBE VOLUME in native mode."""
+    spark = get_spark_session()
+    if spark is None:
+        raise RuntimeError("SparkSession not available in native mode")
+
+    full_name = f"{catalog_name}.{schema_name}.{volume_name}"
+    rows = spark.sql(f"DESCRIBE VOLUME {full_name}").collect()
+
+    # DESCRIBE VOLUME returns key-value pairs
+    volume_info = {
+        "full_name": full_name,
+        "volume_type": None,
+        "storage_location": None,
+        "owner": None,
+        "created_at": None,
+        "updated_at": None,
+        "comment": None,
+    }
+
+    for row in rows:
+        # Rows typically have 'col_name' and 'data_type' or 'info_name' and 'info_value'
+        key = None
+        value = None
+        if hasattr(row, "info_name"):
+            key = row.info_name.lower() if row.info_name else None
+            value = row.info_value
+        elif hasattr(row, "col_name"):
+            key = row.col_name.lower() if row.col_name else None
+            value = row.data_type
+        elif len(row) >= 2:
+            key = str(row[0]).lower() if row[0] else None
+            value = row[1]
+
+        if key:
+            if "type" in key and "volume" in key:
+                volume_info["volume_type"] = value
+            elif "location" in key or "storage" in key:
+                volume_info["storage_location"] = value
+            elif key == "owner":
+                volume_info["owner"] = value
+            elif "created" in key:
+                volume_info["created_at"] = value
+            elif "updated" in key or "modified" in key:
+                volume_info["updated_at"] = value
+            elif key == "comment":
+                volume_info["comment"] = value
+            elif key == "name":
+                volume_info["full_name"] = value
+
+    return {
+        "status": "success",
+        "volume": volume_info,
+    }
 
 
 # Simulation functions for development/testing

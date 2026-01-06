@@ -6,11 +6,11 @@ loop termination via escalation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from google.adk.agents import BaseAgent
-from google.adk.events import Event, EventActions
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event, EventActions
 
 from rlm_adk.rlm_repl import find_final_answer
 from rlm_adk.rlm_state import get_or_create_rlm_state

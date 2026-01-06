@@ -16,13 +16,12 @@ import os
 from typing import Any
 
 from google.adk.tools import ToolContext
+
 from rlm_adk.rlm_repl import (
-    RLMREPLEnvironment,
     clear_repl_session,
-    find_code_blocks,
-    find_final_answer,
     get_or_create_repl_session,
 )
+from rlm_adk.runtime import get_execution_mode, get_spark_session
 
 
 def _create_llm_query_fn(tool_context: ToolContext):
@@ -153,6 +152,7 @@ def rlm_execute_code(
         llm_query_fn=_create_llm_query_fn(tool_context),
         llm_query_batched_fn=_create_llm_query_batched_fn(tool_context),
         context=tool_context.state.get("rlm_context"),
+        spark=get_spark_session() if get_execution_mode() == "native" else None,
     )
 
     # Execute the code
@@ -213,23 +213,44 @@ def rlm_load_context(
         session_id=session_id,
         llm_query_fn=_create_llm_query_fn(tool_context),
         context=context_data,
+        spark=get_spark_session() if get_execution_mode() == "native" else None,
     )
     repl.context = context_data
 
-    # Calculate context info
+    # Calculate context info - handle DataFrames specially
     context_type = type(context_data).__name__
-    if isinstance(context_data, (list, dict, str)):
-        context_size = len(context_data)
-    else:
-        context_size = 1
 
-    # Create preview
+    # Check if it's a Spark DataFrame
+    is_dataframe = False
     try:
-        preview = repr(context_data)
-        if len(preview) > 500:
-            preview = preview[:500] + "..."
-    except Exception:
-        preview = f"<{context_type} object>"
+        from pyspark.sql import DataFrame
+        if isinstance(context_data, DataFrame):
+            is_dataframe = True
+            context_type = "DataFrame"
+            context_size = context_data.count()
+    except ImportError:
+        pass
+
+    if not is_dataframe:
+        if isinstance(context_data, (list, dict, str)):
+            context_size = len(context_data)
+        else:
+            context_size = 1
+
+    # Create preview - handle DataFrames specially
+    if is_dataframe:
+        try:
+            schema_str = context_data._jdf.schema().treeString()
+            preview = f"DataFrame with columns: {context_data.columns}\nSchema:\n{schema_str[:400]}"
+        except Exception:
+            preview = f"DataFrame with {len(context_data.columns)} columns"
+    else:
+        try:
+            preview = repr(context_data)
+            if len(preview) > 500:
+                preview = preview[:500] + "..."
+        except Exception:
+            preview = f"<{context_type} object>"
 
     return {
         "status": "success",
@@ -237,8 +258,10 @@ def rlm_load_context(
         "context_size": context_size,
         "context_preview": preview,
         "description": context_description,
+        "is_dataframe": is_dataframe,
         "message": f"Loaded {context_type} with {context_size} items into REPL context. "
-                   f"Use rlm_execute_code to access via the `context` variable.",
+                   f"Use rlm_execute_code to access via the `context` variable."
+                   + (" SparkSession available as `spark`." if get_execution_mode() == "native" else ""),
     }
 
 
@@ -260,6 +283,7 @@ def rlm_query_context(
             - "iterative": Process context iteratively, maintaining state
             - "map_reduce": Map analysis over chunks, reduce to final answer
             - "hierarchical": Build hierarchical summaries
+            - "spark_sql": (Native mode) Use Spark SQL for initial filtering
 
     Returns:
         dict: Analysis results including:
@@ -292,13 +316,51 @@ def rlm_query_context(
         llm_query_fn=_create_llm_query_fn(tool_context),
         llm_query_batched_fn=_create_llm_query_batched_fn(tool_context),
         context=context,
+        spark=get_spark_session() if get_execution_mode() == "native" else None,
     )
 
     reasoning_trace = []
     iterations = 0
-    max_iterations = 10
+    max_iterations = 10  # noqa: F841  # Reserved for future multi-iteration strategies
 
-    if strategy == "chunk_and_aggregate":
+    if strategy == "spark_sql" and get_execution_mode() == "native":
+        code = f'''
+# RLM Spark SQL Strategy (Native Mode)
+query = """{query}"""
+
+# Check if context is a DataFrame
+if hasattr(context, 'sql_ctx') or str(type(context).__name__) == 'DataFrame':
+    # Register as temp view if not already
+    try:
+        context.createOrReplaceTempView("context_data")
+    except:
+        pass
+
+    # Let LLM generate SQL to answer the query
+    sql_prompt = f"Generate a Spark SQL query to help answer: {{query}}\\nThe table is named 'context_data'. Return only the SQL, no explanation."
+    generated_sql = llm_query(sql_prompt)
+
+    # Clean up the SQL (remove markdown if present)
+    if "```" in generated_sql:
+        generated_sql = generated_sql.split("```")[1].replace("sql", "").strip()
+
+    print(f"Generated SQL: {{generated_sql}}")
+
+    # Execute the SQL
+    result_df = spark.sql(generated_sql)
+    result_data = result_df.limit(100).collect()
+    result_str = str([row.asDict() for row in result_data])
+
+    # Analyze results with LLM
+    final_answer = llm_query(f"Based on this SQL result, answer: {{query}}\\n\\nResult: {{result_str}}")
+    print(f"\\nFinal Answer: {{final_answer}}")
+else:
+    # Fall back to chunk_and_aggregate for non-DataFrame context
+    print("Context is not a DataFrame, falling back to chunk strategy")
+    final_answer = llm_query(f"Answer this about the context: {{query}}\\n\\nContext: {{str(context)[:2000]}}")
+    print(f"\\nFinal Answer: {{final_answer}}")
+'''
+    elif strategy == "chunk_and_aggregate":
         code = f'''
 # RLM Chunk and Aggregate Strategy
 query = """{query}"""
@@ -449,6 +511,8 @@ def rlm_get_session_state(tool_context: ToolContext) -> dict:
             - 'llm_call_count': Number of sub-LM calls
             - 'context_loaded': Whether context is loaded
             - 'context_type': Type of loaded context
+            - 'execution_mode': Current execution mode (local or native)
+            - 'spark_available': Whether SparkSession is available
     """
     session_id = tool_context.state.get("rlm_session_id", "default")
     context = tool_context.state.get("rlm_context")
@@ -457,6 +521,7 @@ def rlm_get_session_state(tool_context: ToolContext) -> dict:
         session_id=session_id,
         llm_query_fn=_create_llm_query_fn(tool_context),
         context=context,
+        spark=get_spark_session() if get_execution_mode() == "native" else None,
     )
 
     stats = repl.get_stats()
@@ -470,6 +535,8 @@ def rlm_get_session_state(tool_context: ToolContext) -> dict:
         "context_loaded": context is not None,
         "context_type": type(context).__name__ if context else None,
         "context_size": len(context) if context and hasattr(context, "__len__") else None,
+        "execution_mode": get_execution_mode(),
+        "spark_available": get_spark_session() is not None,
     }
 
 
